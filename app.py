@@ -13,13 +13,21 @@ def truncar_a_dos_decimales(serie):
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
     """Calcula el nuevo mes aplicando límites inferiores y superiores por separado."""
     df_final = df_hist.copy()
+    
+    # Normalizar nombres de columnas del Excel subido (eliminar espacios y pasar a mayúsculas)
+    df_final.columns = [str(c).strip().upper() for c in df_final.columns]
+    
+    # Validar que existan las columnas obligatorias
+    if 'CONCAT' not in df_final.columns or 'TS' not in df_final.columns or 'NOMINALIZACION' not in df_final.columns:
+        raise ValueError("El Excel debe contener las columnas: CONCAT, TS y Nominalizacion.")
+
     nuevos_limites_inf = []
     nuevos_limites_sup = []
 
     for _, row in df_final.iterrows():
         concat = str(row['CONCAT']).strip()
         ts = str(row['TS']).strip().upper()
-        nom = str(row['Nominalizacion']).strip().upper()
+        nom = str(row['NOMINALIZACION']).strip().upper()
 
         # 1. Identificar la llave de la tarifa base correspondiente
         base_key = None
@@ -32,7 +40,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
             if concat.endswith("2"):
                 base_key = "5KPCN"
             else:
-                base_key = "1-4KMCN"
+                base_key = "1SCN" # fallback seguro si no encuentra
         elif "5KP" in concat: base_key = "5KPCN"
         elif "6KP" in concat: base_key = "6KPCN"
         elif "7KP" in concat: base_key = "7KPCN"
@@ -72,13 +80,13 @@ st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo (.xlsx)", type=['xlsx'])
 
 st.sidebar.header("2. Nuevo Período")
-mes_act = st.sidebar.text_input("Etiqueta Mes Nuevo", "Agosto - AG")
+mes_act = st.sidebar.text_input("Etiqueta Mes Nuevo", "Julio")
 
 st.subheader(f"Ingreso de Bases Tarifarias: {mes_act}")
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
-    "Límite Inferior": [0.0] * 10,
-    "Límite Superior": [0.0] * 10
+    "Límite Inferior": [742.81, 861.66, 1002.8, 1151.36, 1337.06, 1266.1, 1945.42, 2511.52, 3077.62, 3643.72],
+    "Límite Superior": [742.81, 861.66, 1002.8, 1151.36, 1337.06, 1945.42, 2511.52, 3077.62, 3643.72, 5908.12]
 })
 
 tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_width=True)
@@ -89,10 +97,8 @@ if st.button("Calcular TTR y Anexar", type="primary"):
     else:
         with st.spinner("Calculando y anexando mes..."):
             try:
-                # Interpreta el formato español
                 df_hist = pd.read_excel(archivo_historico, decimal=',', thousands='.')
 
-                # Separar los diccionarios para inf y sup
                 dict_bases_inf = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Inferior']))
                 dict_bases_sup = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Superior']))
 
@@ -101,7 +107,7 @@ if st.button("Calcular TTR y Anexar", type="primary"):
                 st.success("✅ Matriz calculada. Las nuevas columnas se agregaron a la derecha.")
 
                 st.write("**Vista Previa:**")
-                st.dataframe(df_actualizado[['CONCAT', 'TS', 'KM', f'{mes_act}_Limite_Inferior', f'{mes_act}_Limite_Superior']].head(10))
+                st.dataframe(df_actualizado.head(10))
 
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
