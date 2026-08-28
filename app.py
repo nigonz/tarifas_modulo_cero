@@ -6,22 +6,22 @@ import io
 st.set_page_config(page_title="TTR - Módulo 0", layout="wide")
 
 def truncar_a_dos_decimales(serie):
+    """Fuerza la conversión numérica y trunca estrictamente a 2 decimales evitando errores de punto flotante."""
     s_num = pd.to_numeric(serie, errors='coerce')
-    return np.trunc(s_num * 100) / 100
+    return np.trunc(s_num * 100.0 + 1e-9) / 100.0
 
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
-    df_final = df_hist.copy()
+    # 1. Limpiar columnas 'Unnamed' y espacios vacíos del DataFrame original
+    df_clean = df_hist.loc[:, ~df_hist.columns.str.contains('^Unnamed', case=False, na=False)].copy()
+    df_clean.columns = [str(c).strip() for c in df_clean.columns]
     
-    # Normalizar nombres de columnas principales
-    df_final.columns = [str(c).strip() for c in df_final.columns]
-    
-    if 'CONCAT' not in df_final.columns or 'TS' not in df_final.columns or 'Nominalizacion' not in df_final.columns:
+    if 'CONCAT' not in df_clean.columns or 'TS' not in df_clean.columns or 'Nominalizacion' not in df_clean.columns:
         raise ValueError("El Excel no encontró las columnas requeridas (CONCAT, TS, Nominalizacion).")
 
     nuevos_limites_inf = []
     nuevos_limites_sup = []
 
-    for _, row in df_final.iterrows():
+    for _, row in df_clean.iterrows():
         concat = str(row['CONCAT']).strip()
         ts = str(row['TS']).strip().upper()
         nom = str(row['Nominalizacion']).strip().upper()
@@ -56,25 +56,24 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         nuevos_limites_inf.append(base_inf * mult_ts * mult_nom)
         nuevos_limites_sup.append(base_sup * mult_ts * mult_nom)
 
-    # Anexar las dos columnas nuevas al final del DataFrame
-    df_final[f'{mes_nuevo_nombre} - Límite Inferior'] = truncar_a_dos_decimales(nuevos_limites_inf)
-    df_final[f'{mes_nuevo_nombre} - Límite Superior'] = truncar_a_dos_decimales(nuevos_limites_sup)
+    # Anexar las dos columnas nuevas truncadas a 2 decimales
+    df_clean[f'{mes_nuevo_nombre} - Límite Inferior'] = truncar_a_dos_decimales(nuevos_limites_inf)
+    df_clean[f'{mes_nuevo_nombre} - Límite Superior'] = truncar_a_dos_decimales(nuevos_limites_sup)
 
-    return df_final
+    return df_clean
 
-st.title("🚜 Módulo 0: Pipeline de TTR")
-st.markdown("Generación automática y completa de la matriz tarifaria mensual.")
+st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
+st.markdown("Generación automática, limpia y consolidada de la matriz tarifaria.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
-# Como tu captura muestra que los datos empiezan en la fila 3 (índice 2 de Excel), dejamos esto listo
 fila_header = st.sidebar.number_input("Fila de los títulos en el Excel", min_value=0, max_value=5, value=1)
 
 st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Julio")
 
 st.subheader(f"Valores Base de Referencia para: {mes_act}")
-st.info("Ingresá las tarifas base principales. El sistema calculará automáticamente las 92 filas completas.")
+st.info("Ingresá las tarifas base principales. El sistema calculará y truncará a 2 decimales las 92 filas completas.")
 
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
@@ -88,7 +87,7 @@ if st.button("Calcular TTR Completa", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando las 92 filas del sistema..."):
+        with st.spinner("Procesando, limpiando columnas y truncando decimales..."):
             try:
                 df_hist = pd.read_excel(archivo_historico, header=fila_header, decimal=',', thousands='.')
 
@@ -97,7 +96,7 @@ if st.button("Calcular TTR Completa", type="primary"):
 
                 df_actualizado = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Matriz calculada al 100%! Las 92 filas tienen sus valores nuevos.")
+                st.success("✅ ¡Matriz procesada sin columnas basura y con decimales perfectamente truncados!")
                 st.dataframe(df_actualizado.head(15))
 
                 buffer = io.BytesIO()
@@ -105,9 +104,9 @@ if st.button("Calcular TTR Completa", type="primary"):
                     df_actualizado.to_excel(writer, index=False, sheet_name='Matriz_ARIA')
 
                 st.download_button(
-                    label="📥 Descargar Matriz Completa (.xlsx)",
+                    label="📥 Descargar Matriz Limpia (.xlsx)",
                     data=buffer.getvalue(),
-                    file_name=f"Matriz_TTR_Completa_{mes_act}.xlsx",
+                    file_name=f"Matriz_TTR_Limpia_{mes_act}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             except Exception as e:
