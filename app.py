@@ -68,8 +68,8 @@ mes_act = st.sidebar.text_input("Etiqueta Mes Nuevo", "Agosto - AG")
 
 st.subheader(f"Ingreso de Bases Tarifarias: {mes_act}")
 datos_base = pd.DataFrame({
-    "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
-    "Valor Numérico": [0.0] * 11
+    "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
+    "Valor Numérico": [0.0] * 10
 })
 
 tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_width=True)
