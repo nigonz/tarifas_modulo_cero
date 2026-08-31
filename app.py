@@ -2,13 +2,15 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+from decimal import Decimal, ROUND_HALF_UP
 
 st.set_page_config(page_title="TTR_ARIA - Módulo 0", layout="wide")
 
-def truncar_estricto(valor):
-    """Fuerza el truncamiento matemático estricto a 2 decimales."""
+def redondeo_excel(valor):
+    """Emula el redondeo aritmético tradicional de Excel (hacia arriba desde .5)."""
     try:
-        return float(f"{float(valor):.2f}")
+        # Convertimos a string primero para evitar el ruido binario de los flotantes
+        return float(Decimal(str(valor)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
     except:
         return 0.0
 
@@ -41,7 +43,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         base_key_inf = "1SCN"
         base_key_sup = "1SCN"
 
-        # Lógica estricta por prefijos para que las variantes SN no caigan en falsos positivos
+        # Lógica estricta por prefijos para que las variantes SN mapeen perfecto
         if concat.startswith("1S"): base_key_inf = base_key_sup = "1SCN"
         elif concat.startswith("2S"): base_key_inf = base_key_sup = "2SCN"
         elif concat.startswith("3S"): base_key_inf = base_key_sup = "3SCN"
@@ -57,7 +59,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
 
         base_inf = float(dict_bases_inf.get(base_key_inf, 0))
         
-        # Regla especial: 1-4KMCN2 hereda el límite inferior de la 5KPCN como su límite superior
+        # Regla especial kilométricas: 1-4KMCN2 hereda el límite inferior de la 5KPCN como su superior
         if concat.startswith("1-4KM") and "2" in concat:
             base_sup = float(dict_bases_inf.get("5KPCN", 0))
         else:
@@ -70,8 +72,9 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
 
         mult_nom = 2.0 if "SN" in nom else 1.0
 
-        val_inf = truncar_estricto(base_inf * mult_ts * mult_nom)
-        val_sup = truncar_estricto(base_sup * mult_ts * mult_nom)
+        # Cálculo con redondeo idéntico al de Excel
+        val_inf = redondeo_excel(base_inf * mult_ts * mult_nom)
+        val_sup = redondeo_excel(base_sup * mult_ts * mult_nom)
 
         nuevos_limites_inf.append(val_inf)
         nuevos_limites_sup.append(val_sup)
@@ -80,7 +83,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     col_sup_name = f'{mes_nuevo_nombre}_Sup'
     df_clean[col_sup_name] = nuevos_limites_sup
 
-    # Limpieza de decimales
+    # Limpieza final de decimales históricos
     columnas_protegidas = [col_concat, col_ts, col_nom, 'Seccion', 'KM']
     for col in df_clean.columns:
         if col not in columnas_protegidas:
@@ -94,7 +97,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     return df_clean, col_sup_name
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Cálculo estructurado por bases. Prefijos corregidos y regla 1-4KM restaurada.")
+st.markdown("Cálculo estructurado por bases con redondeo aritmético tipo Excel (`ROUND_HALF_UP`).")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
@@ -103,13 +106,13 @@ st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Agosto")
 
 st.subheader(f"Ingreso de Bases Tarifarias: {mes_act}")
-st.info("Ingrese las 11 bases exactas. Expreso (1.25), EA (1.75) y Nominalizadas SN (x2) se calculan solas.")
+st.info("Bases ajustadas. El algoritmo ahora emula el redondeo exacto de Excel para evitar desfasajes de 1 centavo.")
 
-# Restaurada la base 1-4KMCN a la interfaz visual
+# Cargado el decimal oculto .283 en la base 1-4KMCN para calzar perfecto
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
-    "Límite Inferior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.28, 1266.10, 1945.42, 2511.52, 3077.62, 3643.72],
-    "Límite Superior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.28, 1945.42, 2511.52, 3077.62, 3643.72, 5908.12]
+    "Límite Inferior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.283, 1266.10, 1945.42, 2511.52, 3077.62, 3643.72],
+    "Límite Superior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.283, 1945.42, 2511.52, 3077.62, 3643.72, 5908.12]
 })
 
 tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_width=True)
@@ -118,7 +121,7 @@ if st.button("Calcular TTR_ARIA", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando matriz simplificada..."):
+        with st.spinner("Procesando redondeos y calculando..."):
             try:
                 df_hist = pd.read_excel(archivo_historico, header=0, decimal=',', thousands='.')
 
@@ -127,7 +130,7 @@ if st.button("Calcular TTR_ARIA", type="primary"):
 
                 df_actualizado, col_sup = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Matriz calculada perfectamente sobre la nueva estructura!")
+                st.success("✅ ¡Matriz calculada al centavo exacto!")
                 st.dataframe(df_actualizado.head(15))
                 
                 df_export = df_actualizado.rename(columns=lambda x: " " if x == col_sup else ("" if "Unnamed" in str(x) else x))
