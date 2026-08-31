@@ -3,12 +3,11 @@ import pandas as pd
 import numpy as np
 import io
 
-st.set_page_config(page_title="TTR - Módulo 0", layout="wide")
+st.set_page_config(page_title="TTR_ARIA - Módulo 0", layout="wide")
 
 def truncar_estricto(valor):
-    """Fuerza el truncamiento estricto a 2 decimales usando formato de texto para evitar basura binaria."""
+    """Fuerza el truncamiento estricto a 2 decimales."""
     try:
-        # Formatea a 2 decimales fijos y vuelve a convertir a float
         return float(f"{float(valor):.2f}")
     except:
         return 0.0
@@ -16,6 +15,7 @@ def truncar_estricto(valor):
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
     df_clean = df_hist.copy()
     
+    # Normalizar columnas para buscarlas de forma segura
     mapa_columnas = {str(c).strip().lower(): str(c).strip() for c in df_clean.columns}
     col_concat = next((mapa_columnas[c] for c in mapa_columnas if 'concat' in c), None)
     col_ts = next((mapa_columnas[c] for c in mapa_columnas if c == 'ts'), None)
@@ -32,7 +32,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         ts = str(row[col_ts]).strip().upper()
         nom = str(row[col_nom]).strip().upper()
 
-        # Identificar la base exacta según el número de sección o categoría
+        # Identificar la base exacta según las reglas de la TTR
         base_key = "1SCN"
         if "1-4KM" in concat:
             base_key = "5KPCN"
@@ -70,23 +70,41 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         nuevos_limites_inf.append(val_inf)
         nuevos_limites_sup.append(val_sup)
 
+    # Pegar el nuevo mes calculado
     df_clean[f'{mes_nuevo_nombre} - Límite Inferior'] = nuevos_limites_inf
     df_clean[f'{mes_nuevo_nombre} - Límite Superior'] = nuevos_limites_sup
+
+    # --- BARRIDO GLOBAL DE LIMPIEZA DECIMAL ---
+    # Protegemos las columnas de referencia para que no intente redondear los "KM" (ej: "1-4")
+    columnas_protegidas = [col_concat, col_ts, col_nom, 'Seccion', 'KM', 'TIPO SECCION']
+    
+    for col in df_clean.columns:
+        if col not in columnas_protegidas:
+            try:
+                # Convertimos la columna forzando a numérico. Los textos (como "Límite") quedan como NaN temporalmente.
+                col_num = pd.to_numeric(df_clean[col].astype(str).str.replace(',', '.'), errors='coerce')
+                
+                # Si encontró al menos un número válido en la columna, aplica el redondeo
+                if col_num.notna().any():
+                    # Combina: si es número lo redondea, si es texto (NaN en col_num) deja el texto original
+                    df_clean[col] = np.where(col_num.notna(), col_num.round(2), df_clean[col])
+            except:
+                pass
 
     return df_clean
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación Tarifaria")
-st.markdown("Cálculo estructurado por bases tipeadas y control estricto de decimales a 2 dígitos.")
+st.markdown("Cálculo estructurado por bases tipeadas con barrido global de decimales.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
-fila_header = st.sidebar.number_input("Fila de los títulos en el Excel", min_value=0, max_value=5, value=0)
+fila_header = st.sidebar.number_input("Fila de los títulos en el Excel (0 para la primera)", min_value=0, max_value=5, value=0)
 
 st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Julio")
 
-st.subheader(f"Ingreso de Bases Tarifarias (Tipeo Manual): {mes_act}")
-st.info("Ingrese los 10 valores base exactos. Las fórmulas aplicarán los factores y redondearán a 2 decimales limpios.")
+st.subheader(f"Ingreso de Bases Tarifarias: {mes_act}")
+st.info("Ingrese las 10 bases. El motor TTR calculará los factores y purgará los decimales históricos.")
 
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
@@ -96,11 +114,11 @@ datos_base = pd.DataFrame({
 
 tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_width=True)
 
-if st.button("Calcular TTR por Fórmulas", type="primary"):
+if st.button("Calcular TTR_ARIA", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando y limpiando decimales..."):
+        with st.spinner("Ejecutando cálculos y purgando matriz..."):
             try:
                 df_hist = pd.read_excel(archivo_historico, header=fila_header, decimal=',', thousands='.')
 
@@ -109,7 +127,7 @@ if st.button("Calcular TTR por Fórmulas", type="primary"):
 
                 df_actualizado = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Cálculo completado con decimales limpios y proporcionales!")
+                st.success("✅ ¡Matriz procesada y limpiada al 100%!")
                 st.dataframe(df_actualizado.head(15))
 
                 buffer = io.BytesIO()
@@ -117,9 +135,9 @@ if st.button("Calcular TTR por Fórmulas", type="primary"):
                     df_actualizado.to_excel(writer, index=False, sheet_name='Matriz_ARIA')
 
                 st.download_button(
-                    label="📥 Descargar Matriz Calculada (.xlsx)",
+                    label="📥 Descargar Matriz ARIA (.xlsx)",
                     data=buffer.getvalue(),
-                    file_name=f"Matriz_TTR_Calculada_{mes_act}.xlsx",
+                    file_name=f"Matriz_TTR_ARIA_{mes_act}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             except Exception as e:
