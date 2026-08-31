@@ -6,7 +6,7 @@ import io
 st.set_page_config(page_title="TTR_ARIA - Módulo 0", layout="wide")
 
 def truncar_estricto(valor):
-    """Fuerza el truncamiento estricto a 2 decimales evitando basura binaria."""
+    """Fuerza el truncamiento matemático estricto a 2 decimales."""
     try:
         return float(f"{float(valor):.2f}")
     except:
@@ -15,7 +15,7 @@ def truncar_estricto(valor):
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
     df_clean = df_hist.copy()
     
-    # Mapear columnas en minúscula para evitar problemas de tildes o mayúsculas
+    # Mapear columnas de forma segura
     mapa_columnas = {str(c).strip().lower(): c for c in df_clean.columns}
     col_concat = next((mapa_columnas[c] for c in mapa_columnas if 'concat' in c), None)
     col_ts = next((mapa_columnas[c] for c in mapa_columnas if c == 'ts'), None)
@@ -28,14 +28,20 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     nuevos_limites_sup = []
 
     for _, row in df_clean.iterrows():
-        concat = str(row[col_concat]).strip()
+        concat = str(row[col_concat]).strip().upper()
+        
+        # Si encuentra una fila vacía perdida, la saltea con valores nulos
+        if concat in ['NAN', 'NONE', '']:
+            nuevos_limites_inf.append(np.nan)
+            nuevos_limites_sup.append(np.nan)
+            continue
+
         ts = str(row[col_ts]).strip().upper()
         nom = str(row[col_nom]).strip().upper()
 
         # Identificación estricta de la base
         base_key = "1SCN"
-        if "1-4KM" in concat:
-            base_key = "5KPCN"
+        if "1-4KM" in concat: base_key = "5KPCN"
         elif "1SC" in concat: base_key = "1SCN"
         elif "2SC" in concat: base_key = "2SCN"
         elif "3SC" in concat: base_key = "3SCN"
@@ -57,10 +63,8 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
 
         # Multiplicadores de TTR
         mult_ts = 1.0
-        if ts == "EA": 
-            mult_ts = 1.75
-        elif ts == "E": 
-            mult_ts = 1.25
+        if ts == "EA": mult_ts = 1.75
+        elif ts == "E": mult_ts = 1.25
 
         mult_nom = 2.0 if "SN" in nom else 1.0
 
@@ -70,11 +74,12 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         nuevos_limites_inf.append(val_inf)
         nuevos_limites_sup.append(val_sup)
 
-    # Pegamos las nuevas columnas nombrando solo la primera para emular tu estructura
+    # Pegamos las nuevas columnas con nombres temporales
     df_clean[f'{mes_nuevo_nombre}'] = nuevos_limites_inf
-    df_clean[f'{mes_nuevo_nombre} (Sup)'] = nuevos_limites_sup
+    col_sup_name = f'{mes_nuevo_nombre}_Sup'
+    df_clean[col_sup_name] = nuevos_limites_sup
 
-    # Barrido para truncar todo a 2 decimales
+    # Barrido para redondear todo a 2 decimales sin romper los textos
     columnas_protegidas = [col_concat, col_ts, col_nom, 'Seccion', 'KM']
     for col in df_clean.columns:
         if col not in columnas_protegidas:
@@ -85,10 +90,10 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
             except:
                 pass
 
-    return df_clean
+    return df_clean, col_sup_name
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Cálculo estructurado por bases tipeadas. Adaptado a encabezado simple.")
+st.markdown("Cálculo estructurado. Estructura simplificada de un solo encabezado.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
@@ -111,22 +116,21 @@ if st.button("Calcular TTR_ARIA", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando matriz de un solo encabezado..."):
+        with st.spinner("Procesando matriz simplificada..."):
             try:
-                # header=0 porque ahora los títulos siempre están en la primera fila
+                # Leemos directo con header=0
                 df_hist = pd.read_excel(archivo_historico, header=0, decimal=',', thousands='.')
 
                 dict_bases_inf = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Inferior']))
                 dict_bases_sup = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Superior']))
 
-                df_actualizado = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
+                df_actualizado, col_sup = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Matriz calculada y decimales limpios!")
+                st.success("✅ ¡Matriz calculada perfectamente sobre la nueva estructura!")
                 st.dataframe(df_actualizado.head(15))
                 
-                # Ocultamos la etiqueta '(Sup)' y las 'Unnamed' justo antes de exportar
-                # para que el Excel de salida quede estéticamente idéntico a tu plantilla de entrada.
-                df_export = df_actualizado.rename(columns=lambda x: '' if 'Unnamed' in str(x) or '(Sup)' in str(x) else x)
+                # Blanquea los títulos de las columnas de límite superior y los Unnamed para la exportación
+                df_export = df_actualizado.rename(columns=lambda x: " " if x == col_sup else ("" if "Unnamed" in str(x) else x))
 
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
