@@ -5,17 +5,18 @@ import io
 
 st.set_page_config(page_title="TTR - Módulo 0", layout="wide")
 
-def truncar_a_dos_decimales(serie):
-    s_num = pd.to_numeric(serie, errors='coerce')
-    return np.trunc(s_num * 100.0 + 1e-9) / 100.0
+def truncar_estricto(valor):
+    """Fuerza el truncamiento estricto a 2 decimales usando formato de texto para evitar basura binaria."""
+    try:
+        # Formatea a 2 decimales fijos y vuelve a convertir a float
+        return float(f"{float(valor):.2f}")
+    except:
+        return 0.0
 
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
     df_clean = df_hist.copy()
     
-    # Normalizar columnas: eliminar espacios, pasar a minúsculas para buscar sin errores de tildes o mayúsculas
     mapa_columnas = {str(c).strip().lower(): str(c).strip() for c in df_clean.columns}
-    
-    # Buscar nombres de columnas de forma flexible
     col_concat = next((mapa_columnas[c] for c in mapa_columnas if 'concat' in c), None)
     col_ts = next((mapa_columnas[c] for c in mapa_columnas if c == 'ts'), None)
     col_nom = next((mapa_columnas[c] for c in mapa_columnas if 'nominaliz' in c), None)
@@ -31,22 +32,25 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         ts = str(row[col_ts]).strip().upper()
         nom = str(row[col_nom]).strip().upper()
 
-        # Identificar la base exacta según las reglas de la TTR
+        # Identificar la base exacta según el número de sección o categoría
         base_key = "1SCN"
         if "1-4KM" in concat:
             base_key = "5KPCN"
-        elif "SC" in concat:
-            if "1SC" in concat: base_key = "1SCN"
-            elif "2SC" in concat: base_key = "2SCN"
-            elif "3SC" in concat: base_key = "3SCN"
-            elif "4SC" in concat: base_key = "4SCN"
-            elif "5SC" in concat: base_key = "5SCN"
-        elif "KP" in concat:
-            if "5KP" in concat: base_key = "5KPCN"
-            elif "6KP" in concat: base_key = "6KPCN"
-            elif "7KP" in concat: base_key = "7KPCN"
-            elif "8KP" in concat: base_key = "8KPCN"
-            elif "9KP" in concat: base_key = "9KPCN"
+        elif "1SC" in concat: base_key = "1SCN"
+        elif "2SC" in concat: base_key = "2SCN"
+        elif "3SC" in concat: base_key = "3SCN"
+        elif "4SC" in concat: base_key = "4SCN"
+        elif "5SC" in concat: base_key = "5SCN"
+        elif "1SEN" in concat or "1SEAN" in concat: base_key = "1SCN"
+        elif "2SEN" in concat or "2SEAN" in concat: base_key = "2SCN"
+        elif "3SEN" in concat or "3SEAN" in concat: base_key = "3SCN"
+        elif "4SEN" in concat or "4SEAN" in concat: base_key = "4SCN"
+        elif "5SEN" in concat or "5SEAN" in concat: base_key = "5SCN"
+        elif "5KP" in concat: base_key = "5KPCN"
+        elif "6KP" in concat: base_key = "6KPCN"
+        elif "7KP" in concat: base_key = "7KPCN"
+        elif "8KP" in concat: base_key = "8KPCN"
+        elif "9KP" in concat: base_key = "9KPCN"
 
         base_inf = float(dict_bases_inf.get(base_key, 0))
         base_sup = float(dict_bases_sup.get(base_key, 0))
@@ -60,11 +64,11 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
 
         mult_nom = 2.0 if "SN" in nom else 1.0
 
-        val_inf = truncar_a_dos_decimales(base_inf * mult_ts * mult_nom)
-        val_sup = truncar_a_dos_decimales(base_sup * mult_ts * mult_nom)
+        val_inf = truncar_estricto(base_inf * mult_ts * mult_nom)
+        val_sup = truncar_estricto(base_sup * mult_ts * mult_nom)
 
-        nuevos_limites_inf.append(float(val_inf))
-        nuevos_limites_sup.append(float(val_sup))
+        nuevos_limites_inf.append(val_inf)
+        nuevos_limites_sup.append(val_sup)
 
     df_clean[f'{mes_nuevo_nombre} - Límite Inferior'] = nuevos_limites_inf
     df_clean[f'{mes_nuevo_nombre} - Límite Superior'] = nuevos_limites_sup
@@ -72,17 +76,17 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     return df_clean
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación Tarifaria")
-st.markdown("Cálculo estructurado por bases tipeadas y aplicación estricta de factores.")
+st.markdown("Cálculo estructurado por bases tipeadas y control estricto de decimales a 2 dígitos.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
-fila_header = st.sidebar.number_input("Fila de los títulos en el Excel (0 para la primera fila)", min_value=0, max_value=5, value=0)
+fila_header = st.sidebar.number_input("Fila de los títulos en el Excel", min_value=0, max_value=5, value=0)
 
 st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Julio")
 
 st.subheader(f"Ingreso de Bases Tarifarias (Tipeo Manual): {mes_act}")
-st.info("Ingrese los 10 valores base exactos. Las categorías se calcularán automáticamente por fórmula.")
+st.info("Ingrese los 10 valores base exactos. Las fórmulas aplicarán los factores y redondearán a 2 decimales limpios.")
 
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
@@ -96,7 +100,7 @@ if st.button("Calcular TTR por Fórmulas", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando y calculando..."):
+        with st.spinner("Procesando y limpiando decimales..."):
             try:
                 df_hist = pd.read_excel(archivo_historico, header=fila_header, decimal=',', thousands='.')
 
@@ -105,7 +109,7 @@ if st.button("Calcular TTR por Fórmulas", type="primary"):
 
                 df_actualizado = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Cálculo completado exitosamente!")
+                st.success("✅ ¡Cálculo completado con decimales limpios y proporcionales!")
                 st.dataframe(df_actualizado.head(15))
 
                 buffer = io.BytesIO()
