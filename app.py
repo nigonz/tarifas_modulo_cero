@@ -15,7 +15,6 @@ def truncar_estricto(valor):
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
     df_clean = df_hist.copy()
     
-    # Mapear columnas de forma segura
     mapa_columnas = {str(c).strip().lower(): c for c in df_clean.columns}
     col_concat = next((mapa_columnas[c] for c in mapa_columnas if 'concat' in c), None)
     col_ts = next((mapa_columnas[c] for c in mapa_columnas if c == 'ts'), None)
@@ -30,7 +29,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     for _, row in df_clean.iterrows():
         concat = str(row[col_concat]).strip().upper()
         
-        # Si encuentra una fila vacía perdida, la saltea con valores nulos
+        # Ignorar filas vacías
         if concat in ['NAN', 'NONE', '']:
             nuevos_limites_inf.append(np.nan)
             nuevos_limites_sup.append(np.nan)
@@ -39,29 +38,32 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         ts = str(row[col_ts]).strip().upper()
         nom = str(row[col_nom]).strip().upper()
 
-        # Identificación estricta de la base
-        base_key = "1SCN"
-        if "1-4KM" in concat: base_key = "5KPCN"
-        elif "1SC" in concat: base_key = "1SCN"
-        elif "2SC" in concat: base_key = "2SCN"
-        elif "3SC" in concat: base_key = "3SCN"
-        elif "4SC" in concat: base_key = "4SCN"
-        elif "5SC" in concat: base_key = "5SCN"
-        elif "1SEN" in concat or "1SEAN" in concat: base_key = "1SCN"
-        elif "2SEN" in concat or "2SEAN" in concat: base_key = "2SCN"
-        elif "3SEN" in concat or "3SEAN" in concat: base_key = "3SCN"
-        elif "4SEN" in concat or "4SEAN" in concat: base_key = "4SCN"
-        elif "5SEN" in concat or "5SEAN" in concat: base_key = "5SCN"
-        elif "5KP" in concat: base_key = "5KPCN"
-        elif "6KP" in concat: base_key = "6KPCN"
-        elif "7KP" in concat: base_key = "7KPCN"
-        elif "8KP" in concat: base_key = "8KPCN"
-        elif "9KP" in concat: base_key = "9KPCN"
+        base_key_inf = "1SCN"
+        base_key_sup = "1SCN"
 
-        base_inf = float(dict_bases_inf.get(base_key, 0))
-        base_sup = float(dict_bases_sup.get(base_key, 0))
+        # Lógica estricta por prefijos para que las variantes SN no caigan en falsos positivos
+        if concat.startswith("1S"): base_key_inf = base_key_sup = "1SCN"
+        elif concat.startswith("2S"): base_key_inf = base_key_sup = "2SCN"
+        elif concat.startswith("3S"): base_key_inf = base_key_sup = "3SCN"
+        elif concat.startswith("4S"): base_key_inf = base_key_sup = "4SCN"
+        elif concat.startswith("5S"): base_key_inf = base_key_sup = "5SCN"
+        elif concat.startswith("1-4KM"): 
+            base_key_inf = base_key_sup = "1-4KMCN"
+        elif concat.startswith("5KP"): base_key_inf = base_key_sup = "5KPCN"
+        elif concat.startswith("6KP"): base_key_inf = base_key_sup = "6KPCN"
+        elif concat.startswith("7KP"): base_key_inf = base_key_sup = "7KPCN"
+        elif concat.startswith("8KP"): base_key_inf = base_key_sup = "8KPCN"
+        elif concat.startswith("9KP"): base_key_inf = base_key_sup = "9KPCN"
 
-        # Multiplicadores de TTR
+        base_inf = float(dict_bases_inf.get(base_key_inf, 0))
+        
+        # Regla especial: 1-4KMCN2 hereda el límite inferior de la 5KPCN como su límite superior
+        if concat.startswith("1-4KM") and "2" in concat:
+            base_sup = float(dict_bases_inf.get("5KPCN", 0))
+        else:
+            base_sup = float(dict_bases_sup.get(base_key_sup, 0))
+
+        # Multiplicadores puros de la TTR (1.25, 1.75, 2.0)
         mult_ts = 1.0
         if ts == "EA": mult_ts = 1.75
         elif ts == "E": mult_ts = 1.25
@@ -74,12 +76,11 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         nuevos_limites_inf.append(val_inf)
         nuevos_limites_sup.append(val_sup)
 
-    # Pegamos las nuevas columnas con nombres temporales
     df_clean[f'{mes_nuevo_nombre}'] = nuevos_limites_inf
     col_sup_name = f'{mes_nuevo_nombre}_Sup'
     df_clean[col_sup_name] = nuevos_limites_sup
 
-    # Barrido para redondear todo a 2 decimales sin romper los textos
+    # Limpieza de decimales
     columnas_protegidas = [col_concat, col_ts, col_nom, 'Seccion', 'KM']
     for col in df_clean.columns:
         if col not in columnas_protegidas:
@@ -93,7 +94,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     return df_clean, col_sup_name
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Cálculo estructurado. Estructura simplificada de un solo encabezado.")
+st.markdown("Cálculo estructurado por bases. Prefijos corregidos y regla 1-4KM restaurada.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
@@ -102,12 +103,13 @@ st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Agosto")
 
 st.subheader(f"Ingreso de Bases Tarifarias: {mes_act}")
-st.info("Ingrese las 10 bases exactas. Expreso (1.25), EA (1.75) y Nominalizadas SN (x2) se calculan solas.")
+st.info("Ingrese las 11 bases exactas. Expreso (1.25), EA (1.75) y Nominalizadas SN (x2) se calculan solas.")
 
+# Restaurada la base 1-4KMCN a la interfaz visual
 datos_base = pd.DataFrame({
-    "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
-    "Límite Inferior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 1266.10, 1945.42, 2511.52, 3077.62, 3643.72],
-    "Límite Superior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 1945.42, 2511.52, 3077.62, 3643.72, 5908.12]
+    "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
+    "Límite Inferior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.28, 1266.10, 1945.42, 2511.52, 3077.62, 3643.72],
+    "Límite Superior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.28, 1945.42, 2511.52, 3077.62, 3643.72, 5908.12]
 })
 
 tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_width=True)
@@ -118,7 +120,6 @@ if st.button("Calcular TTR_ARIA", type="primary"):
     else:
         with st.spinner("Procesando matriz simplificada..."):
             try:
-                # Leemos directo con header=0
                 df_hist = pd.read_excel(archivo_historico, header=0, decimal=',', thousands='.')
 
                 dict_bases_inf = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Inferior']))
@@ -129,7 +130,6 @@ if st.button("Calcular TTR_ARIA", type="primary"):
                 st.success("✅ ¡Matriz calculada perfectamente sobre la nueva estructura!")
                 st.dataframe(df_actualizado.head(15))
                 
-                # Blanquea los títulos de las columnas de límite superior y los Unnamed para la exportación
                 df_export = df_actualizado.rename(columns=lambda x: " " if x == col_sup else ("" if "Unnamed" in str(x) else x))
 
                 buffer = io.BytesIO()
