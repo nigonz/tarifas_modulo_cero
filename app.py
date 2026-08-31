@@ -2,19 +2,18 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
-from decimal import Decimal, ROUND_HALF_EVEN
+from decimal import Decimal, ROUND_HALF_UP
 
 st.set_page_config(page_title="TTR_ARIA - Módulo 0", layout="wide")
 
 def calcular_tarifa(base, mult_ts, mult_nom):
-    """Cálculo estricto con Decimal y redondeo tipo Excel (Banker's Rounding) al centavo exacto."""
+    """Cálculo con Decimal y redondeo aritmético tradicional de Excel (hacia arriba en .5)."""
     try:
         d_base = Decimal(str(base))
         d_mult_ts = Decimal(str(mult_ts))
         d_mult_nom = Decimal(str(mult_nom))
         res = d_base * d_mult_ts * d_mult_nom
-        # ROUND_HALF_EVEN es el método nativo que hace que .905 sea .90 y .675 sea .68
-        return float(res.quantize(Decimal('0.01'), rounding=ROUND_HALF_EVEN))
+        return float(res.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
     except:
         return 0.0
 
@@ -36,7 +35,6 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     for _, row in df_clean.iterrows():
         concat = str(row[col_concat]).strip().upper()
         
-        # Ignorar filas vacías de subtítulos
         if concat in ['NAN', 'NONE', '']:
             nuevos_limites_inf.append(np.nan)
             nuevos_limites_sup.append(np.nan)
@@ -50,7 +48,6 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         base_key_sup = "1SCN"
         es_caso_especial_km2 = False
 
-        # Identificación estricta por prefijo para mapear todas las nominalizaciones sin errores
         if concat.startswith("1S"): base_key_inf = base_key_sup = "1SCN"
         elif concat.startswith("2S"): base_key_inf = base_key_sup = "2SCN"
         elif concat.startswith("3S"): base_key_inf = base_key_sup = "3SCN"
@@ -67,9 +64,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         elif concat.startswith("8KP"): base_key_inf = base_key_sup = "8KPCN"
         elif concat.startswith("9KP"): base_key_inf = base_key_sup = "9KPCN"
 
-        # Lógica de asignación de bases y factores
         if es_caso_especial_km2:
-            # Caso "1-4KM...2" desagregado: base estática 977.283 inf / 1266.10 sup, factores por KM
             base_inf = float(dict_bases_inf.get("1-4KMCN", 977.283))
             base_sup = float(dict_bases_inf.get("5KPCN", 1266.10))
             
@@ -77,13 +72,15 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
             elif km_str == '60-75': mult_ts, mult_nom = 1.25, 1.0
             elif km_str == '75-90': mult_ts, mult_nom = 1.75, 1.0
             elif km_str == '90-150': mult_ts, mult_nom = 2.0, 1.0
-            elif km_str == '0-3': mult_ts, mult_nom = 1.25, 2.0  # Total 2.5
-            elif km_str == '3-6': mult_ts, mult_nom = 1.75, 2.0  # Total 3.5
+            elif km_str == '0-3': mult_ts, mult_nom = 1.25, 2.0
+            elif km_str == '3-6': mult_ts, mult_nom = 1.75, 2.0
             else: mult_ts, mult_nom = 1.0, 1.0
         else:
-            # Lógica normal de TTR
             base_inf = float(dict_bases_inf.get(base_key_inf, 0))
             base_sup = float(dict_bases_sup.get(base_key_sup, 0))
+            
+            if concat.startswith("5KP") and ts == "E":
+                base_sup = base_inf
             
             mult_ts = 1.0
             if ts == "EA": mult_ts = 1.75
@@ -97,12 +94,10 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         nuevos_limites_inf.append(val_inf)
         nuevos_limites_sup.append(val_sup)
 
-    # Inyección de las nuevas columnas
     df_clean[f'{mes_nuevo_nombre}'] = nuevos_limites_inf
     col_sup_name = f'{mes_nuevo_nombre}_Sup'
     df_clean[col_sup_name] = nuevos_limites_sup
 
-    # Limpieza final para que todos los números históricos también queden prolijos a 2 decimales
     columnas_protegidas = [col_concat, col_ts, col_nom, col_km, 'Seccion', 'TIPO SECCION']
     for col in df_clean.columns:
         if col not in columnas_protegidas:
@@ -116,7 +111,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     return df_clean, col_sup_name
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Cálculo estructurado por bases con redondeo Decimal exacto y desagregado kilométrico integrado.")
+st.markdown("Cálculo estructurado por bases. Redondeo nativo de Excel restaurado y regla 5KP implementada.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
@@ -125,9 +120,8 @@ st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Agosto")
 
 st.subheader(f"Ingreso de Bases Tarifarias: {mes_act}")
-st.info("Bases configuradas. Algoritmo ajustado para clavar el centavo y rutear los rangos kilométricos desagregados.")
+st.info("Bases configuradas con redondeo ROUND_HALF_UP para empatar cálculos continuos (.625 a .63).")
 
-# El decimal oculto .283 asegura que 977.283 * 1.75 * 2 clave exacto el 3420.49
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
     "Límite Inferior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.283, 1266.10, 1945.42, 2511.52, 3077.62, 3643.72],
@@ -149,7 +143,7 @@ if st.button("Calcular TTR_ARIA", type="primary"):
 
                 df_actualizado, col_sup = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Matriz calculada al centavo exacto sin repetidos!")
+                st.success("✅ ¡Matriz calculada con redondeo exacto de Excel!")
                 st.dataframe(df_actualizado.head(15))
                 
                 df_export = df_actualizado.rename(columns=lambda x: " " if x == col_sup else ("" if "Unnamed" in str(x) else x))
