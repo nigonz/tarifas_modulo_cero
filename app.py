@@ -6,24 +6,10 @@ from decimal import Decimal, ROUND_DOWN
 
 st.set_page_config(page_title="TTR_ARIA - Módulo 0", layout="wide")
 
-def truncar_a_dos(val):
-    """Trunca cualquier valor numérico o texto a exactamente 2 decimales (ROUND_DOWN)."""
-    if pd.isna(val):
-        return np.nan
-    s = str(val).strip()
-    if s in ['', 'nan', 'None', '-', 'NaN']:
-        return np.nan
-    try:
-        # Reemplazar coma por punto para procesar de forma segura con Decimal
-        d = Decimal(s.replace(',', '.'))
-        return float(d.quantize(Decimal('0.01'), rounding=ROUND_DOWN))
-    except:
-        return val
-
 def calcular_tarifa_truncada(base, mult_ts, mult_nom):
-    """Cálculo matricial puro con TRUNCAMIENTO ESTRICTO a 2 decimales (sin redondear)."""
+    """Cálculo matricial puro con truncamiento estricto a 2 decimales (ROUND_DOWN)."""
     try:
-        d_base = Decimal(str(base))
+        d_base = Decimal(str(base).replace(',', '.'))
         d_mult_ts = Decimal(str(mult_ts))
         d_mult_nom = Decimal(str(mult_nom))
         res = d_base * d_mult_ts * d_mult_nom
@@ -32,6 +18,7 @@ def calcular_tarifa_truncada(base, mult_ts, mult_nom):
         return 0.0
 
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
+    # Copiamos el DataFrame histórico tal cual viene, sin tocar ni recalcular sus columnas existentes
     df_clean = df_hist.copy()
     
     mapa_columnas = {str(c).strip().lower(): c for c in df_clean.columns}
@@ -43,18 +30,13 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     if not col_concat or not col_ts or not col_nom:
         raise ValueError(f"Faltan columnas clave en el Excel. Leídas: {list(df_clean.columns)}")
 
-    # 1. Truncar a 2 decimales TODAS las columnas numéricas existentes del histórico para limpiar cualquier residuo
-    columnas_protegidas = [col_concat, col_ts, col_nom, col_km, 'Seccion', 'TIPO SECCION']
-    for col in df_clean.columns:
-        if col not in columnas_protegidas and not str(col).startswith('Unnamed'):
-            df_clean[col] = df_clean[col].apply(truncar_a_dos)
-
     nuevos_limites_inf = []
     nuevos_limites_sup = []
 
     for _, row in df_clean.iterrows():
         concat = str(row[col_concat]).strip().upper()
         
+        # Saltamos celdas vacías o subtítulos/SR
         if concat in ['NAN', 'NONE', ''] or "SR" in concat:
             nuevos_limites_inf.append(np.nan)
             nuevos_limites_sup.append(np.nan)
@@ -85,8 +67,8 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         elif concat.startswith("9KP"): base_key_inf = base_key_sup = "9KPCN"
 
         if es_caso_especial_km2:
-            base_inf = float(dict_bases_inf.get("1-4KMCN", 977.28))
-            base_sup = float(dict_bases_inf.get("5KPCN", 1266.10))
+            base_inf = float(str(dict_bases_inf.get("1-4KMCN", "977.28")).replace(',', '.'))
+            base_sup = float(str(dict_bases_inf.get("5KPCN", "1266.10")).replace(',', '.'))
             
             if km_str == '45-60': mult_ts, mult_nom = 1.0, 1.0
             elif km_str == '60-75': mult_ts, mult_nom = 1.25, 1.0
@@ -96,8 +78,8 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
             elif km_str == '3-6': mult_ts, mult_nom = 1.75, 2.0
             else: mult_ts, mult_nom = 1.0, 1.0
         else:
-            base_inf = float(dict_bases_inf.get(base_key_inf, 0))
-            base_sup = float(dict_bases_sup.get(base_key_sup, 0))
+            base_inf = float(str(dict_bases_inf.get(base_key_inf, "0")).replace(',', '.'))
+            base_sup = float(str(dict_bases_sup.get(base_key_sup, "0")).replace(',', '.'))
             
             if concat.startswith("5KP") and ts == "E":
                 base_sup = base_inf
@@ -114,6 +96,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         nuevos_limites_inf.append(val_inf)
         nuevos_limites_sup.append(val_sup)
 
+    # Inserción de las columnas nuevas del mes con formato limpio
     df_clean[f'{mes_nuevo_nombre}'] = nuevos_limites_inf
     col_sup_name = f'{mes_nuevo_nombre}_Sup'
     df_clean[col_sup_name] = nuevos_limites_sup
@@ -121,7 +104,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     return df_clean, col_sup_name
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Motor TTR calibrado. Truncamiento estricto a 2 decimales universal aplicado.")
+st.markdown("Motor TTR ajustado: El histórico se respeta intacto y los nuevos cálculos se truncan estrictamente a 2 decimales.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
@@ -130,7 +113,7 @@ st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Agosto")
 
 st.subheader(f"Ingreso de Bases Tarifarias Puras: {mes_act}")
-st.info("Ingresá las 11 bases. Todo el DataFrame se trunca estrictamente a 2 decimales sin excepciones.")
+st.info("Ingresá las 11 bases. El histórico no se modifica; solo se calculan los nuevos límites truncados.")
 
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
@@ -144,9 +127,9 @@ if st.button("Generar TTR_ARIA", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando y truncando con precisión milimétrica..."):
+        with st.spinner("Procesando matriz..."):
             try:
-                # Leer como texto puro (dtype=str) para evitar cualquier alteración de decimales por parte de Pandas
+                # Leemos como texto puro para preservar exactas las celdas originales del Excel maestro
                 df_hist = pd.read_excel(archivo_historico, header=0, dtype=str)
 
                 dict_bases_inf = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Inferior']))
@@ -154,7 +137,7 @@ if st.button("Generar TTR_ARIA", type="primary"):
 
                 df_actualizado, col_sup = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Matriz generada con truncamiento estricto a 2 decimales!")
+                st.success("✅ ¡Matriz generada manteniendo el histórico intacto y calculando el nuevo mes!")
                 st.dataframe(df_actualizado.head(15))
                 
                 df_export = df_actualizado.rename(columns=lambda x: " " if x == col_sup else ("" if "Unnamed" in str(x) else x))
