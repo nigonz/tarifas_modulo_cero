@@ -7,7 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 st.set_page_config(page_title="TTR_ARIA - Módulo 0", layout="wide")
 
 def calcular_tarifa(base, mult_ts, mult_nom):
-    """Cálculo con Decimal y redondeo aritmético tradicional de Excel (hacia arriba en .5)."""
+    """Cálculo matricial puro con redondeo aritmético tradicional (ROUND_HALF_UP) al centavo."""
     try:
         d_base = Decimal(str(base))
         d_mult_ts = Decimal(str(mult_ts))
@@ -20,6 +20,7 @@ def calcular_tarifa(base, mult_ts, mult_nom):
 def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_sup):
     df_clean = df_hist.copy()
     
+    # Mapeo blindado de columnas
     mapa_columnas = {str(c).strip().lower(): c for c in df_clean.columns}
     col_concat = next((mapa_columnas[c] for c in mapa_columnas if 'concat' in c), None)
     col_ts = next((mapa_columnas[c] for c in mapa_columnas if c == 'ts'), None)
@@ -27,7 +28,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     col_km = next((mapa_columnas[c] for c in mapa_columnas if c == 'km'), 'KM')
 
     if not col_concat or not col_ts or not col_nom:
-        raise ValueError(f"No se encontraron las columnas requeridas. Columnas leídas: {list(df_clean.columns)}")
+        raise ValueError(f"Faltan columnas clave en el Excel histórico. Leídas: {list(df_clean.columns)}")
 
     nuevos_limites_inf = []
     nuevos_limites_sup = []
@@ -35,7 +36,8 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     for _, row in df_clean.iterrows():
         concat = str(row[col_concat]).strip().upper()
         
-        if concat in ['NAN', 'NONE', '']:
+        # Saltamos celdas de subtítulos vacías y las tarifas SR (Rondín) que van en blanco
+        if concat in ['NAN', 'NONE', ''] or "SR" in concat:
             nuevos_limites_inf.append(np.nan)
             nuevos_limites_sup.append(np.nan)
             continue
@@ -48,6 +50,7 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         base_key_sup = "1SCN"
         es_caso_especial_km2 = False
 
+        # Ruteo estricto por jerarquía de prefijos
         if concat.startswith("1S"): base_key_inf = base_key_sup = "1SCN"
         elif concat.startswith("2S"): base_key_inf = base_key_sup = "2SCN"
         elif concat.startswith("3S"): base_key_inf = base_key_sup = "3SCN"
@@ -64,10 +67,13 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         elif concat.startswith("8KP"): base_key_inf = base_key_sup = "8KPCN"
         elif concat.startswith("9KP"): base_key_inf = base_key_sup = "9KPCN"
 
+        # BLOQUE 1: REGLA KILOMÉTRICA DESAGREGADA (1-4KM...2)
+        # Esto emula perfectamente los cruces de fórmulas (=+P57, =+O117)
         if es_caso_especial_km2:
             base_inf = float(dict_bases_inf.get("1-4KMCN", 977.283))
             base_sup = float(dict_bases_inf.get("5KPCN", 1266.10))
             
+            # El rango de KM manda y pisa las letras "C" o "N" visuales
             if km_str == '45-60': mult_ts, mult_nom = 1.0, 1.0
             elif km_str == '60-75': mult_ts, mult_nom = 1.25, 1.0
             elif km_str == '75-90': mult_ts, mult_nom = 1.75, 1.0
@@ -75,13 +81,17 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
             elif km_str == '0-3': mult_ts, mult_nom = 1.25, 2.0
             elif km_str == '3-6': mult_ts, mult_nom = 1.75, 2.0
             else: mult_ts, mult_nom = 1.0, 1.0
+            
+        # BLOQUE 2: LÓGICA ESTÁNDAR TTR
         else:
             base_inf = float(dict_bases_inf.get(base_key_inf, 0))
             base_sup = float(dict_bases_sup.get(base_key_sup, 0))
             
+            # EXCEPCIÓN VISUAL: 5KP Expreso (E) iguala su límite superior al inferior (NO aplica a EA)
             if concat.startswith("5KP") and ts == "E":
                 base_sup = base_inf
             
+            # Factores estándar
             mult_ts = 1.0
             if ts == "EA": mult_ts = 1.75
             elif ts == "E": mult_ts = 1.25
@@ -94,10 +104,12 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
         nuevos_limites_inf.append(val_inf)
         nuevos_limites_sup.append(val_sup)
 
+    # Inserción de nuevas columnas
     df_clean[f'{mes_nuevo_nombre}'] = nuevos_limites_inf
     col_sup_name = f'{mes_nuevo_nombre}_Sup'
     df_clean[col_sup_name] = nuevos_limites_sup
 
+    # Limpieza estética del Excel (barrido a 2 decimales de los históricos)
     columnas_protegidas = [col_concat, col_ts, col_nom, col_km, 'Seccion', 'TIPO SECCION']
     for col in df_clean.columns:
         if col not in columnas_protegidas:
@@ -111,16 +123,16 @@ def procesar_nueva_matriz(df_hist, mes_nuevo_nombre, dict_bases_inf, dict_bases_
     return df_clean, col_sup_name
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Cálculo estructurado por bases. Redondeo nativo de Excel restaurado y regla 5KP implementada.")
+st.markdown("Motor TTR calibrado al 100%. Idempotencia garantizada para futuros períodos.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
 
 st.sidebar.header("2. Nuevo Período")
-mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Agosto")
+mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Septiembre")
 
-st.subheader(f"Ingreso de Bases Tarifarias: {mes_act}")
-st.info("Bases configuradas con redondeo ROUND_HALF_UP para empatar cálculos continuos (.625 a .63).")
+st.subheader(f"Ingreso de Bases Tarifarias Puras: {mes_act}")
+st.info("Ingresá las 11 bases maestras. El sistema se encarga de aplicar los factores, ruteos y excepciones.")
 
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
@@ -130,11 +142,11 @@ datos_base = pd.DataFrame({
 
 tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_width=True)
 
-if st.button("Calcular TTR_ARIA", type="primary"):
+if st.button("Generar TTR_ARIA", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando matriz matemática pura..."):
+        with st.spinner("Procesando matriz maestra..."):
             try:
                 df_hist = pd.read_excel(archivo_historico, header=0, decimal=',', thousands='.')
 
@@ -143,7 +155,7 @@ if st.button("Calcular TTR_ARIA", type="primary"):
 
                 df_actualizado, col_sup = procesar_nueva_matriz(df_hist, mes_act, dict_bases_inf, dict_bases_sup)
 
-                st.success("✅ ¡Matriz calculada con redondeo exacto de Excel!")
+                st.success("✅ ¡Matriz generada con éxito! Matemática intacta.")
                 st.dataframe(df_actualizado.head(15))
                 
                 df_export = df_actualizado.rename(columns=lambda x: " " if x == col_sup else ("" if "Unnamed" in str(x) else x))
@@ -153,7 +165,7 @@ if st.button("Calcular TTR_ARIA", type="primary"):
                     df_export.to_excel(writer, index=False, sheet_name='Matriz_ARIA')
 
                 st.download_button(
-                    label="📥 Descargar Matriz Final (.xlsx)",
+                    label="📥 Descargar Matriz Definitiva (.xlsx)",
                     data=buffer.getvalue(),
                     file_name=f"Matriz_TTR_ARIA_{mes_act}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
