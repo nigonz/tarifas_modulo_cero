@@ -19,21 +19,23 @@ def calcular_tarifa(base, mult_ts, mult_nom):
         return 0.0
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Motor TTR optimizado: Ingesta numérica, formato 0.00 y limpieza visual de cabeceras.")
+st.markdown("Motor TTR optimizado: Ingesta numérica, formato 0.00 y lienzo en blanco para nuevos períodos.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
 
 st.sidebar.header("2. Nuevo Período")
-mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Agosto")
+# Lo seteamos por defecto en Septiembre como punto de partida
+mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Septiembre")
 
 st.subheader(f"Ingreso de Bases Tarifarias Puras: {mes_act}")
-st.info("Ingresá las 11 bases. El histórico se lee limpio y se exporta sin alterar su estructura.")
+st.info("Ingresá las 11 bases maestras del mes en curso.")
 
+# Inicializar el DataFrame vacío para obligar el ingreso manual
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
-    "Límite Inferior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.28, 1266.10, 1945.42, 2511.52, 3077.62, 3643.72],
-    "Límite Superior": [742.81, 861.66, 1002.80, 1151.36, 1337.06, 977.28, 1945.42, 2511.52, 3077.62, 3643.72, 5908.12]
+    "Límite Inferior": pd.Series([None] * 11, dtype=float),
+    "Límite Superior": pd.Series([None] * 11, dtype=float)
 })
 
 tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_width=True)
@@ -41,6 +43,8 @@ tarifas_editadas = st.data_editor(datos_base, hide_index=True, use_container_wid
 if st.button("Generar TTR_ARIA", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
+    elif tarifas_editadas.isnull().values.any():
+        st.error("⚠️ Faltan cargar valores. Por favor, completá todos los límites inferiores y superiores antes de generar la matriz.")
     else:
         with st.spinner("Procesando matriz y formateando celdas..."):
             try:
@@ -101,8 +105,9 @@ if st.button("Generar TTR_ARIA", type="primary"):
                     elif concat.startswith("9KP"): base_key_inf = base_key_sup = "9KPCN"
 
                     if es_caso_especial_km2:
-                        base_inf = float(dict_bases_inf.get("1-4KMCN", 977.28))
-                        base_sup = float(dict_bases_inf.get("5KPCN", 1266.10))
+                        # Ya no hay valores fijos. Todo depende exclusivamente del data_editor
+                        base_inf = float(dict_bases_inf.get("1-4KMCN", 0))
+                        base_sup = float(dict_bases_inf.get("5KPCN", 0))
                         
                         if km_str == '45-60': mult_ts, mult_nom = 1.0, 1.0
                         elif km_str == '60-75': mult_ts, mult_nom = 1.25, 1.0
@@ -162,11 +167,11 @@ if st.button("Generar TTR_ARIA", type="primary"):
                 wb.save(final_buffer)
                 final_buffer.seek(0)
 
-                st.success("✅ ¡Matriz generada con éxito, ruido binario erradicado y celdas formateadas a '0.00'!")
+                st.success(f"✅ ¡Matriz de {mes_act} generada con éxito!")
                 st.dataframe(df_export.head(15))
 
                 st.download_button(
-                    label="📥 Descargar Matriz Definitiva (.xlsx)",
+                    label=f"📥 Descargar Matriz Definitiva {mes_act} (.xlsx)",
                     data=final_buffer.getvalue(),
                     file_name=f"Matriz_TTR_ARIA_{mes_act}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
