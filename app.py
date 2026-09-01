@@ -19,7 +19,7 @@ def calcular_tarifa(base, mult_ts, mult_nom):
         return 0.0
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Motor TTR optimizado: Ingesta numérica limpia, erradicación de ruido binario y formato de celda `0.00` aplicado.")
+st.markdown("Motor TTR optimizado: Ingesta numérica, formato 0.00 y limpieza visual de cabeceras.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
@@ -28,7 +28,7 @@ st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Agosto")
 
 st.subheader(f"Ingreso de Bases Tarifarias Puras: {mes_act}")
-st.info("Ingresá las 11 bases. El histórico se lee de forma numérica limpia y se exporta formateado a 2 decimales.")
+st.info("Ingresá las 11 bases. El histórico se lee limpio y se exporta sin alterar su estructura.")
 
 datos_base = pd.DataFrame({
     "CONCAT Base": ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '1-4KMCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN'],
@@ -42,9 +42,9 @@ if st.button("Generar TTR_ARIA", type="primary"):
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
     else:
-        with st.spinner("Procesando matriz, limpiando decimales y aplicando formato..."):
+        with st.spinner("Procesando matriz y formateando celdas..."):
             try:
-                # 1. Lectura normal de pandas (infiriendo números correctamente)
+                # 1. Lectura normal
                 df_hist = pd.read_excel(archivo_historico, header=0)
 
                 mapa_columnas = {str(c).strip().lower(): c for c in df_hist.columns}
@@ -56,7 +56,7 @@ if st.button("Generar TTR_ARIA", type="primary"):
                 if not col_concat or not col_ts or not col_nom:
                     raise ValueError(f"Faltan columnas clave. Leídas: {list(df_hist.columns)}")
 
-                # 2. Limpiar y redondear columnas numéricas históricas para erradicar el ruido binario interno
+                # 2. Limpieza de floats binarios históricos (truncado visual a 2 decimales reales)
                 columnas_protegidas = [col_concat, col_ts, col_nom, col_km, 'Seccion', 'TIPO SECCION']
                 for col in df_hist.columns:
                     if col not in columnas_protegidas and not str(col).startswith('Unnamed'):
@@ -130,15 +130,21 @@ if st.button("Generar TTR_ARIA", type="primary"):
                     nuevos_limites_inf.append(val_inf)
                     nuevos_limites_sup.append(val_sup)
 
-                # CORRECCIÓN ACÁ: Usamos mes_act en lugar de la variable vieja
                 df_hist[f'{mes_act}'] = nuevos_limites_inf
                 col_sup_name = f'{mes_act}_Sup'
                 df_hist[col_sup_name] = nuevos_limites_sup
 
-                # Renombrar para que la columna superior quede en blanco visualmente como querías
-                df_export = df_hist.rename(columns=lambda x: " " if x == col_sup_name else ("" if "Unnamed" in str(x) else x))
+                # Generar espacios invisibles únicos para burlar la restricción de nombres duplicados de Pandas
+                rename_dict = {}
+                espacios = 1
+                for col in df_hist.columns:
+                    if "Unnamed" in str(col) or str(col) == col_sup_name:
+                        rename_dict[col] = " " * espacios
+                        espacios += 1
+                
+                df_export = df_hist.rename(columns=rename_dict)
 
-                # 3. Exportar a Excel y aplicar formato '0.00' a nivel celda con openpyxl
+                # 3. Exportar con formato 0.00
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df_export.to_excel(writer, index=False, sheet_name='Matriz_ARIA')
@@ -147,7 +153,6 @@ if st.button("Generar TTR_ARIA", type="primary"):
                 wb = openpyxl.load_workbook(buffer)
                 ws = wb.active
 
-                # Forzar formato '0.00' en todas las celdas numéricas de la hoja
                 for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                     for cell in row:
                         if isinstance(cell.value, (int, float)):
