@@ -7,6 +7,17 @@ import openpyxl
 
 st.set_page_config(page_title="TTR_ARIA - Módulo 0", layout="wide")
 
+def parse_argentinian_float(val):
+    """Convierte texto con comas o puntos a float de forma segura."""
+    if pd.isna(val) or str(val).strip() == "":
+        return 0.0
+    # Reemplaza la coma argentina por el punto internacional
+    s = str(val).replace(',', '.')
+    try:
+        return float(s)
+    except:
+        return 0.0
+
 def calcular_tarifa(base, mult_ts, mult_nom):
     """Cálculo matricial puro con truncamiento estricto a 2 decimales."""
     try:
@@ -19,7 +30,7 @@ def calcular_tarifa(base, mult_ts, mult_nom):
         return 0.0
 
 st.title("🚜 TTR_ARIA - Pipeline de Liquidación")
-st.markdown("Motor TTR JN: Indexación automática y arquitectura de espejos exactos para la familia desagregada.")
+st.markdown("Motor TTR JN: Indexación automática y protección contra errores de tipeo.")
 
 st.sidebar.header("1. Cargar Historial")
 archivo_historico = st.sidebar.file_uploader("Subir Archivo Histórico (.xlsx)", type=['xlsx'])
@@ -28,15 +39,16 @@ st.sidebar.header("2. Nuevo Período")
 mes_act = st.sidebar.text_input("Nombre del Mes Nuevo", "Septiembre")
 
 st.subheader(f"Ingreso de Bases Tarifarias Puras: {mes_act}")
-st.info("💡 Ingresá tus 10 bases manuales. La base 1-4KMCN se indexa sola y las desagregadas espejan los resultados.")
+st.info("💡 Ingresá tus 10 bases manuales. Ahora podés pegar valores con comas (ej: 1870,13) sin problemas.")
 
 llaves = ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN', '5KPCN', '6KPCN', '7KPCN', '8KPCN', '9KPCN']
 
+# Inicializamos como STRING (object) para que Streamlit no se coma las comas argentinas
 if 'tabla_bases' not in st.session_state:
     st.session_state.tabla_bases = pd.DataFrame({
         "CONCAT Base": llaves,
-        "Límite Inferior": pd.Series([None] * 10, dtype=float),
-        "Límite Superior": pd.Series([None] * 10, dtype=float)
+        "Límite Inferior": pd.Series([""] * 10, dtype=str),
+        "Límite Superior": pd.Series([""] * 10, dtype=str)
     })
 
 tarifas_editadas = st.data_editor(st.session_state.tabla_bases, hide_index=True, use_container_width=True)
@@ -45,11 +57,11 @@ if st.button("🪄 Auto-Completar Límites Superiores"):
     df_temp = tarifas_editadas.copy()
     
     for i in range(5):
-        if pd.notna(df_temp.loc[i, "Límite Inferior"]):
+        if str(df_temp.loc[i, "Límite Inferior"]).strip() != "":
             df_temp.loc[i, "Límite Superior"] = df_temp.loc[i, "Límite Inferior"]
             
     for i in range(5, 9):
-        if pd.notna(df_temp.loc[i+1, "Límite Inferior"]):
+        if str(df_temp.loc[i+1, "Límite Inferior"]).strip() != "":
             df_temp.loc[i, "Límite Superior"] = df_temp.loc[i+1, "Límite Inferior"]
             
     st.session_state.tabla_bases = df_temp
@@ -58,9 +70,13 @@ if st.button("🪄 Auto-Completar Límites Superiores"):
 st.markdown("---")
 
 if st.button("Generar TTR_ARIA", type="primary"):
+    # Convertimos los inputs de texto a números flotantes reales antes de validar
+    dict_bases_inf = {k: parse_argentinian_float(v) for k, v in zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Inferior'])}
+    dict_bases_sup = {k: parse_argentinian_float(v) for k, v in zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Superior'])}
+    
     if archivo_historico is None:
         st.warning("⚠️ Subí la matriz histórica en el panel lateral.")
-    elif tarifas_editadas.isnull().values.any():
+    elif all(v == 0.0 for v in dict_bases_inf.values()):
         st.error("⚠️ Faltan cargar valores. Revisá que la tabla esté completa.")
     else:
         with st.spinner("Procesando matriz..."):
@@ -84,9 +100,6 @@ if st.button("Generar TTR_ARIA", type="primary"):
                         df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce').round(2)
                         cols_historicas_meses.append(col)
 
-                dict_bases_inf = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Inferior']))
-                dict_bases_sup = dict(zip(tarifas_editadas['CONCAT Base'], tarifas_editadas['Límite Superior']))
-
                 # --- INDEXACIÓN 1-4KMCN ---
                 base_1_4kmcn_dinamica = 0.0
                 if len(cols_historicas_meses) > 0:
@@ -96,10 +109,11 @@ if st.button("Generar TTR_ARIA", type="primary"):
                     idx_1_4kmcn = df_hist[df_hist[col_concat].astype(str).str.strip().str.upper() == '1-4KMCN'].index
                     
                     if len(idx_1scn) > 0 and len(idx_1_4kmcn) > 0:
-                        val_1scn_viejo = df_hist.loc[idx_1scn[0], col_mes_anterior]
-                        val_1_4kmcn_viejo = df_hist.loc[idx_1_4kmcn[0], col_mes_anterior]
+                        # USAMOS .mode()[0] PARA ESQUIVAR TYPOS EN CELDAS INDIVIDUALES DEL EXCEL
+                        val_1scn_viejo = df_hist.loc[idx_1scn, col_mes_anterior].mode()[0]
+                        val_1_4kmcn_viejo = df_hist.loc[idx_1_4kmcn, col_mes_anterior].mode()[0]
                         
-                        val_1scn_nuevo = float(dict_bases_inf.get('1SCN', 0))
+                        val_1scn_nuevo = dict_bases_inf.get('1SCN', 0.0)
                         
                         if pd.notna(val_1scn_viejo) and val_1scn_viejo != 0:
                             factor_aumento = val_1scn_nuevo / float(val_1scn_viejo)
@@ -111,8 +125,6 @@ if st.button("Generar TTR_ARIA", type="primary"):
 
                 nuevos_limites_inf = []
                 nuevos_limites_sup = []
-                
-                # Memoria caché para guardar resultados y espejarlos luego en la familia "2"
                 mapa_resultados = {}
 
                 for _, row in df_hist.iterrows():
@@ -132,7 +144,7 @@ if st.button("Generar TTR_ARIA", type="primary"):
                         es_caso_especial_km2 = True
 
                     if es_caso_especial_km2:
-                        # ARQUITECTURA DE ESPEJOS: Toma valores de la memoria en lugar de calcular
+                        # ARQUITECTURA DE ESPEJOS
                         if km_str == '45-60':   ref_inf, ref_sup = '1-4KMCN', '5KPCN'
                         elif km_str == '60-75': ref_inf, ref_sup = '1-4KMEN', '5KPEN'
                         elif km_str == '75-90': ref_inf, ref_sup = '1-4KMEAN', '5KPEAN'
@@ -145,7 +157,7 @@ if st.button("Generar TTR_ARIA", type="primary"):
                         val_sup = mapa_resultados.get(ref_sup, (0, 0))[1]
                         
                     else:
-                        # CÁLCULO NORMAL PARA EL RESTO DE LA MATRIZ
+                        # CÁLCULO NORMAL
                         base_key_inf = base_key_sup = "1SCN"
                         if concat.startswith("1S"): base_key_inf = base_key_sup = "1SCN"
                         elif concat.startswith("2S"): base_key_inf = base_key_sup = "2SCN"
@@ -177,7 +189,6 @@ if st.button("Generar TTR_ARIA", type="primary"):
                         val_inf = calcular_tarifa(base_inf, mult_ts, mult_nom)
                         val_sup = calcular_tarifa(base_sup, mult_ts, mult_nom)
                         
-                        # Guardamos en caché para cuando pasen las desagregadas "...2" al final de la hoja
                         if concat not in mapa_resultados:
                             mapa_resultados[concat] = (val_inf, val_sup)
 
@@ -214,7 +225,7 @@ if st.button("Generar TTR_ARIA", type="primary"):
                 wb.save(final_buffer)
                 final_buffer.seek(0)
 
-                st.success(f"✅ ¡Matriz de {mes_act} generada! Arquitectura de referencias y espejos aplicada.")
+                st.success(f"✅ ¡Matriz de {mes_act} generada! Errores de tipeo y de formato neutralizados.")
                 st.dataframe(df_export.head(15))
 
                 st.download_button(
