@@ -185,6 +185,9 @@ def modulo_tarifas():
 
 # ==============================================================================
 # MÓDULO 1: DMK (ITG y ATS)
+# Reescrito para replicar 1:1 la lógica del notebook "manual" validado:
+# nomenclador único (archivo 07), asserts de integridad en cada merge/groupby,
+# y Control_Cobertura calculado sobre el universo COMPLETO (no solo beneficiarias).
 # ==============================================================================
 def modulo_dmk():
     st.title("🧮 TTR_ARIA - Módulo 1: Liquidación DMK (ITG/ATS)")
@@ -195,7 +198,7 @@ def modulo_dmk():
         IVA = col1.number_input("Factor IVA (Ej: 1.105)", value=1.105, format="%.3f")
         str_contratos_ats = col2.text_input("Contratos ATS (separados por coma)", "621")
         str_contratos_est = col3.text_input("Contratos Estudiantiles", "830, 831, 832, 833")
-        
+
         CONTRATOS_ATS = [int(x.strip()) for x in str_contratos_ats.split(',')]
         CONTRATOS_ESTUDIANTILES = [int(x.strip()) for x in str_contratos_est.split(',')]
         ENERGIA_DEFECTO = 3
@@ -206,46 +209,131 @@ def modulo_dmk():
     st.header("1. Carga de Archivos de Entrada")
     col1, col2 = st.columns(2)
     file_dggi = col1.file_uploader("1. Base DGGI (CSV o Excel)", type=['csv', 'xlsx'])
-    file_nom_univ = col2.file_uploader("2. Nomenclador Líneas (Nomenclador.v2)", type=['xlsx'])
+    file_nom_univ = col2.file_uploader("2. Nomenclador Interior/AMBA (archivo 07 — único)", type=['xlsx'])
     file_nom_ramal = col1.file_uploader("3. Nomenclador Ramal - TS", type=['xlsx'])
     file_pme = col2.file_uploader("4. Parque Móvil - Energías", type=['xlsx'])
+
+    st.checkbox(
+        "Generar también el CSV de detalle completo 'Base' (puede ser pesado — recomendado dejarlo tildado)",
+        value=True, key="dmk_generar_csv_base"
+    )
 
     if st.button("🚀 Ejecutar Liquidación DMK", type="primary", use_container_width=True):
         if not all([file_dggi, file_nom_univ, file_nom_ramal, file_pme]):
             st.error("⚠️ Faltan cargar archivos. Asegurate de subir los 4 requeridos.")
             return
-            
+
         with st.spinner("Procesando pipeline de datos DMK..."):
             try:
-                df_raw = pd.read_csv(file_dggi, encoding='ISO-8859-1', delimiter=';') if file_dggi.name.endswith('.csv') else pd.read_excel(file_dggi)
-                nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name='01. NOMENCLADOR')
-                nom_ramal_raw = pd.read_excel(file_nom_ramal, sheet_name='NOMENCLADOR TS')
-                pme_raw = pd.read_excel(file_pme, sheet_name='Nomenclador_PM_E')
-                tipo_energia_raw = pd.read_excel(file_pme, sheet_name='Tipo_Energia')
+                # ----------------------------------------------------------------
+                # 1) CARGA
+                # ----------------------------------------------------------------
+                if file_dggi.name.lower().endswith('.csv'):
+                    df_raw = pd.read_csv(file_dggi, encoding='ISO-8859-1', delimiter=';')
+                else:
+                    df_raw = pd.read_excel(file_dggi)
 
-                # BÚSQUEDA DIFUSA: Nomenclador Líneas
+                # El nomenclador único (archivo 07) puede traer su hoja con distinto
+                # nombre exacto según la exportación del mes; se intenta el nombre
+                # canónico y se cae a la primera hoja si no está.
+                xls_nom = pd.ExcelFile(file_nom_univ)
+                hoja_nom = 'Nomenclador_Interior' if 'Nomenclador_Interior' in xls_nom.sheet_names else xls_nom.sheet_names[0]
+                nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name=hoja_nom)
+
+                xls_ramal = pd.ExcelFile(file_nom_ramal)
+                hoja_ramal = 'NOMENCLADOR TS' if 'NOMENCLADOR TS' in xls_ramal.sheet_names else xls_ramal.sheet_names[0]
+                nom_ramal_raw = pd.read_excel(file_nom_ramal, sheet_name=hoja_ramal)
+
+                xls_pme = pd.ExcelFile(file_pme)
+                hoja_pme = 'Nomenclador_PM_E' if 'Nomenclador_PM_E' in xls_pme.sheet_names else xls_pme.sheet_names[0]
+                hoja_energia = 'Tipo_Energia' if 'Tipo_Energia' in xls_pme.sheet_names else xls_pme.sheet_names[-1]
+                pme_raw = pd.read_excel(file_pme, sheet_name=hoja_pme)
+                tipo_energia_raw = pd.read_excel(file_pme, sheet_name=hoja_energia)
+
+                st.write(f"Base DGGI: **{df_raw.shape[0]:,}** filas x {df_raw.shape[1]} columnas")
+                st.write(f"Nomenclador líneas (hoja `{hoja_nom}`): **{nom_lineas_raw.shape[0]:,}** líneas")
+
+                # ----------------------------------------------------------------
+                # 2) NORMALIZACIÓN DE LA BASE DGGI
+                # ----------------------------------------------------------------
+                RENOMBRE_BASE = {'MONTO': 'RECAUDACION'}
+                COLS_TEXTO = ['DOMINIO', 'MK', 'VIAJE INTEGRADO', 'MEDIOS_DE_PAGO']
+                COLS_MONTO = ['TARIFA', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'RECAUDACION',
+                              'TOTAL DESC POR INTEGRACION', 'DESCUENTO_TOTAL', 'DESCUENTO_ATRIBUTOS']
+                COLS_ID = ['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'INTERNO']
+
+                df_base = df_raw.copy()
+                df_base.columns = df_base.columns.str.strip()
+                # Si el crudo trae MONTO en vez de RECAUDACION, o cambia levemente
+                # el nombre de alguna columna clave, buscar_col cubre el desvío;
+                # el resto de la lógica sigue siendo la del manual.
+                for nombre_viejo, nombre_nuevo in RENOMBRE_BASE.items():
+                    if nombre_nuevo not in df_base.columns:
+                        col_real = buscar_col(df_base, nombre_viejo, nombre_nuevo)
+                        if col_real:
+                            df_base = df_base.rename(columns={col_real: nombre_nuevo})
+
+                for c in COLS_TEXTO:
+                    col_real = buscar_col(df_base, c)
+                    df_base[c] = df_base[col_real].astype('string').str.strip().str.upper() if col_real else pd.Series(dtype='string', index=df_base.index)
+
+                for c in COLS_MONTO:
+                    col_real = buscar_col(df_base, c)
+                    df_base[c] = pd.to_numeric(df_base[col_real], errors='coerce').fillna(0) if col_real else 0.0
+
+                for c in COLS_ID:
+                    col_real = buscar_col(df_base, c)
+                    df_base[c] = pd.to_numeric(df_base[col_real], errors='coerce').astype('Int64') if col_real else pd.Series(dtype='Int64', index=df_base.index)
+
+                usos_crudo = df_base['CANTIDAD_USOS'].sum()
+                st.write(f"Base normalizada: **{len(df_base):,}** filas | Usos (crudo): **{usos_crudo:,.0f}**")
+
+                # ----------------------------------------------------------------
+                # 3) NOMENCLADOR DE LÍNEAS ÚNICO (archivo 07)
+                # ----------------------------------------------------------------
                 c_id_linea = buscar_col(nom_lineas_raw, 'ID_LINEA', 'ID LINEA')
                 c_gt = buscar_col(nom_lineas_raw, 'GT', 'GRUPO TARIFARIO')
-                c_silas = buscar_col(nom_lineas_raw, 'LINEA SILAS DNGFF', 'SILAS')
-                c_empresa = buscar_col(nom_lineas_raw, 'IDEMPRESA', 'ID EMPRESA', 'EMPRESA')
-                c_rs = buscar_col(nom_lineas_raw, 'RAZON_SOCIAL', 'RAZON SOCIAL', 'SOCIAL')
-                c_juris = buscar_col(nom_lineas_raw, 'JURIS', 'JURISDICCION')
-                c_prov = buscar_col(nom_lineas_raw, 'PROVINCIA', 'PROV')
-                c_mun = buscar_col(nom_lineas_raw, 'MUNICIPIO', 'LOCALIDAD')
+                c_silas = buscar_col(nom_lineas_raw, 'SILAS - AMBA', 'SILAS')
+                c_empresa = buscar_col(nom_lineas_raw, 'ID_EMPRESA', 'IDEMPRESA', 'ID EMPRESA')
+                c_rs = buscar_col(nom_lineas_raw, 'Razon social', 'RAZON_SOCIAL', 'RAZON SOCIAL')
+                c_juris = buscar_col(nom_lineas_raw, 'Jurisdiccion', 'JURISDICCION')
+                c_prov = buscar_col(nom_lineas_raw, 'Provincia', 'PROVINCIA')
+                c_mun = buscar_col(nom_lineas_raw, 'Localidad', 'MUNICIPIO')
+                c_dep = buscar_col(nom_lineas_raw, 'Departamento', 'DEPARTAMENTO')
+
+                faltantes_nom = [nom for nom, col in [
+                    ('ID_LINEA', c_id_linea), ('GT', c_gt), ('SILAS - AMBA', c_silas),
+                    ('Jurisdiccion', c_juris), ('Provincia', c_prov),
+                ] if col is None]
+                if faltantes_nom:
+                    st.error(f"⚠️ El Nomenclador de líneas no tiene las columnas esperadas: {faltantes_nom}. "
+                             f"Verificá que sea el archivo 07 (Nomenclador_Interior_AMBA) y no una versión vieja.")
+                    return
 
                 n_lin = pd.DataFrame()
-                n_lin['ID_LINEA'] = pd.to_numeric(nom_lineas_raw[c_id_linea], errors='coerce').astype('Int64') if c_id_linea else pd.Series(dtype='Int64')
-                n_lin['GRUPO_TARIFARIO'] = nom_lineas_raw[c_gt].astype('string').str.strip() if c_gt else pd.Series(dtype='string')
-                n_lin['LINEA_SILAS_DNGFF'] = nom_lineas_raw[c_silas].astype('string').str.strip() if c_silas else pd.Series(dtype='string')
+                n_lin['ID_LINEA'] = pd.to_numeric(nom_lineas_raw[c_id_linea], errors='coerce').astype('Int64')
+                n_lin['GRUPO_TARIFARIO'] = nom_lineas_raw[c_gt].astype('string').str.strip()
+                n_lin['LINEA_SILAS_DNGFF'] = nom_lineas_raw[c_silas].astype('string').str.strip()
                 n_lin['ID_EMPRESA_NOM'] = pd.to_numeric(nom_lineas_raw[c_empresa], errors='coerce').astype('Int64') if c_empresa else pd.Series(dtype='Int64')
                 n_lin['RAZON_SOCIAL'] = nom_lineas_raw[c_rs].astype('string').str.strip() if c_rs else pd.Series(dtype='string')
-                n_lin['JURISDICCION'] = nom_lineas_raw[c_juris].astype('string').str.strip() if c_juris else pd.Series(dtype='string')
-                n_lin['PROVINCIA'] = nom_lineas_raw[c_prov].astype('string').str.strip() if c_prov else pd.Series(dtype='string')
+                n_lin['JURISDICCION'] = nom_lineas_raw[c_juris].astype('string').str.strip()
+                n_lin['PROVINCIA'] = nom_lineas_raw[c_prov].astype('string').str.strip()
                 n_lin['MUNICIPIO'] = nom_lineas_raw[c_mun].astype('string').str.strip() if c_mun else pd.Series(dtype='string')
-                n_lin['DEPARTAMENTO'] = SIN_DATO
-                nom_lineas = n_lin.dropna(subset=['ID_LINEA']).drop_duplicates(subset=['ID_LINEA'])
+                n_lin['DEPARTAMENTO'] = nom_lineas_raw[c_dep].astype('string').str.strip() if c_dep else SIN_DATO
 
-                # BÚSQUEDA DIFUSA: Nomenclador Ramales
+                nom_lineas = n_lin.dropna(subset=['ID_LINEA'])
+
+                duplicadas = nom_lineas.loc[nom_lineas['ID_LINEA'].duplicated(keep=False), 'ID_LINEA'].unique()
+                if len(duplicadas) > 0:
+                    st.error(f"⚠️ El Nomenclador de líneas tiene ID_LINEA duplicada — esto infla los montos al cruzar. "
+                              f"Líneas duplicadas: {sorted(duplicadas.tolist())}. Corregí el archivo 07 antes de continuar.")
+                    return
+
+                st.write(f"Nomenclador de líneas (universo Beneficiario): **{len(nom_lineas):,}** líneas únicas")
+
+                # ----------------------------------------------------------------
+                # 4) NOMENCLADOR DE RAMAL Y PARQUE MÓVIL
+                # ----------------------------------------------------------------
                 c_ramal = buscar_col(nom_ramal_raw, 'IdRamalNS', 'RAMAL')
                 c_ts = buscar_col(nom_ramal_raw, 'TIPO DE SERVICIO FINAL', 'SERVICIO', 'TS')
                 n_ram = pd.DataFrame()
@@ -253,16 +341,13 @@ def modulo_dmk():
                 n_ram['TIPO_SERVICIO'] = nom_ramal_raw[c_ts].astype('string').str.strip().str.upper() if c_ts else pd.Series(dtype='string')
                 nom_ramal = n_ram.dropna(subset=['RAMAL']).drop_duplicates(subset=['RAMAL'])
 
-                # BÚSQUEDA DIFUSA: Parque Móvil
-                c_dom = buscar_col(pme_raw, 'DOMINIO', 'PATENTE')
-                c_ene = buscar_col(pme_raw, 'ENERGIA', 'ENERG')
+                c_dom_pm = buscar_col(pme_raw, 'DOMINIO', 'PATENTE')
+                c_ene_pm = buscar_col(pme_raw, 'ENERGIA', 'ENERG')
                 p = pd.DataFrame()
-                if c_dom and c_ene:
-                    p['DOMINIO'] = pme_raw[c_dom].astype('string').str.strip().str.upper()
-                    p['ENERGIA'] = pd.to_numeric(pme_raw[c_ene], errors='coerce').astype('Int64')
+                p['DOMINIO'] = pme_raw[c_dom_pm].astype('string').str.strip().str.upper() if c_dom_pm else pd.Series(dtype='string')
+                p['ENERGIA'] = pd.to_numeric(pme_raw[c_ene_pm], errors='coerce').astype('Int64') if c_ene_pm else pd.Series(dtype='Int64')
                 pme = p.dropna(subset=['DOMINIO']).drop_duplicates(subset=['DOMINIO'])
 
-                # BÚSQUEDA DIFUSA: Tipo Energía
                 c_te_ene = buscar_col(tipo_energia_raw, 'ENERGIA', 'ENERG', 'ID')
                 c_te_con = buscar_col(tipo_energia_raw, 'CONCEPTO', 'CONCEPT', 'DESC')
                 if c_te_ene and c_te_con:
@@ -270,76 +355,91 @@ def modulo_dmk():
                 else:
                     MAPA_ENERGIA = {}
 
-                # Normalización Base DGGI
-                df_base = df_raw.copy()
-                c_monto = buscar_col(df_base, 'MONTO', 'RECAUDACION')
-                if c_monto: df_base = df_base.rename(columns={c_monto: 'RECAUDACION'})
-                
-                for c in ['DOMINIO', 'MK', 'VIAJE INTEGRADO', 'MEDIOS_DE_PAGO']:
-                    col_real = buscar_col(df_base, c)
-                    if col_real: df_base[col_real] = df_base[col_real].astype('string').str.strip().str.upper()
-                for c in ['TARIFA', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'RECAUDACION', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_TOTAL', 'DESCUENTO_ATRIBUTOS']:
-                    col_real = buscar_col(df_base, c)
-                    if col_real: df_base[col_real] = pd.to_numeric(df_base[col_real], errors='coerce').fillna(0)
-                for c in ['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'INTERNO']:
-                    col_real = buscar_col(df_base, c)
-                    if col_real: df_base[col_real] = pd.to_numeric(df_base[col_real], errors='coerce').astype('Int64')
+                st.write(f"Ramales: **{len(nom_ramal):,}** | Dominios en Parque Móvil: **{len(pme):,}**")
 
+                # ----------------------------------------------------------------
+                # 5) ENRIQUECIMIENTO — merges con validate='m:1' y control de filas
+                # ----------------------------------------------------------------
+                filas_iniciales = len(df_base)
                 d = df_base.merge(nom_lineas, on='ID_LINEA', how='left', validate='m:1')
                 d = d.merge(nom_ramal, on='RAMAL', how='left', validate='m:1')
                 d = d.merge(pme, on='DOMINIO', how='left', validate='m:1')
-                
+
+                if len(d) != filas_iniciales:
+                    st.error("⚠️ Un merge duplicó filas — hay una clave repetida en algún nomenclador. Revisar antes de confiar en los totales.")
+                    return
+
                 d['ES_BENEFICIARIA'] = np.where(d['GRUPO_TARIFARIO'].notna(), 'SI', 'NO')
+
                 gt_upper = d['GRUPO_TARIFARIO'].astype('string').str.strip().str.upper()
-                d['AMBA'] = np.select([gt_upper.isin(GRUPOS_AMBA).fillna(False).to_numpy(), gt_upper.eq(GRUPO_INP).fillna(False).to_numpy()], ['SI', 'AMBA - INP'], default='NO')
+                es_amba = gt_upper.isin(GRUPOS_AMBA).fillna(False).to_numpy()
+                es_inp = gt_upper.eq(GRUPO_INP).fillna(False).to_numpy()
+                d['AMBA'] = np.select([es_amba, es_inp], ['SI', 'AMBA - INP'], default='NO')
+
                 d['EN_PARQUE_MOVIL'] = np.where(d['ENERGIA'].notna(), 'SI', 'NO')
                 d['TIPO_ENERGIA'] = d['ENERGIA'].fillna(ENERGIA_DEFECTO).astype('Int64')
                 d['ENERGIA_DESC'] = d['TIPO_ENERGIA'].map(MAPA_ENERGIA).astype('string')
                 d = d.drop(columns='ENERGIA')
+
                 for c in ['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'DEPARTAMENTO', 'GRUPO_TARIFARIO', 'RAZON_SOCIAL', 'LINEA_SILAS_DNGFF', 'TIPO_SERVICIO']:
                     d[c] = d[c].astype('string').fillna(SIN_DATO)
-                
-                d['COINCIDE_EMPRESA'] = np.select([d['ID_EMPRESA_NOM'].isna().to_numpy(), (d['ID_EMPRESA'] == d['ID_EMPRESA_NOM']).fillna(False).to_numpy()], [SIN_DATO, 'SI'], default='NO')
 
-                col_viaje_int = buscar_col(d, 'VIAJE INTEGRADO')
-                d['ES_INTEGRADO'] = np.where(d[col_viaje_int].astype('string').eq('SI') if col_viaje_int else False, 'SI', 'NO')
-                
+                sin_empresa_nom = d['ID_EMPRESA_NOM'].isna().to_numpy()
+                misma_empresa = (d['ID_EMPRESA'] == d['ID_EMPRESA_NOM']).fillna(False).to_numpy()
+                d['COINCIDE_EMPRESA'] = np.select([sin_empresa_nom, misma_empresa], [SIN_DATO, 'SI'], default='NO')
+
+                # Control visible: cuánto matcheó vs. cuánto no, en filas y en usos.
+                conteo_benef = d['ES_BENEFICIARIA'].value_counts()
+                usos_benef = d.groupby('ES_BENEFICIARIA')['CANTIDAD_USOS'].sum()
+                c_a, c_b = st.columns(2)
+                c_a.metric("Filas Beneficiarias / No Beneficiarias", f"{conteo_benef.get('SI', 0):,} / {conteo_benef.get('NO', 0):,}")
+                c_b.metric("Usos Beneficiarios / No Beneficiarios", f"{usos_benef.get('SI', 0):,.0f} / {usos_benef.get('NO', 0):,.0f}")
+
+                # ----------------------------------------------------------------
+                # 6) MARCAS DE BENEFICIO
+                # ----------------------------------------------------------------
+                d['ES_INTEGRADO'] = np.where(d['VIAJE INTEGRADO'].astype('string').eq('SI'), 'SI', 'NO')
                 es_ats = d['CONTRATO'].isin(CONTRATOS_ATS).to_numpy()
                 es_est = d['CONTRATO'].isin(CONTRATOS_ESTUDIANTILES).to_numpy()
-                col_desc_atri = buscar_col(d, 'DESCUENTO_ATRIBUTOS')
-                tiene_desc = (d[col_desc_atri] > 0).to_numpy() if col_desc_atri else np.zeros(len(d), dtype=bool)
-                
+                tiene_desc = (d['DESCUENTO_ATRIBUTOS'] > 0).to_numpy()
+
                 d['ES_ATS'] = np.where(es_ats, 'SI', 'NO')
                 d['ES_ESTUDIANTIL'] = np.where(es_est, 'SI', 'NO')
                 d['ES_OTRO_BENEFICIO'] = np.where(tiene_desc & ~es_ats & ~es_est, 'SI', 'NO')
                 d['TIPO_BENEFICIO'] = np.select([es_ats, es_est, tiene_desc & ~es_ats & ~es_est], ['ATS', 'ESTUDIANTIL', 'OTRO BENEFICIO'], default='SIN BENEFICIO')
 
-                c_usos = buscar_col(d, 'CANTIDAD_USOS')
-                c_total_desc_int = buscar_col(d, 'TOTAL DESC POR INTEGRACION')
-                c_desc_tot = buscar_col(d, 'DESCUENTO_TOTAL')
-                c_deb = buscar_col(d, 'DEBITADO')
-                c_tar = buscar_col(d, 'TARIFA')
-                c_desc_x_int = buscar_col(d, 'DESCUENTO X INTEGRACION')
-
-                u = d[c_usos] if c_usos else 0
-                d['COMP. ITG'] = d[c_total_desc_int] if c_total_desc_int else 0
+                # ----------------------------------------------------------------
+                # 7) COMPENSACIONES (publicadas + control)
+                # ----------------------------------------------------------------
+                u = d['CANTIDAD_USOS']
+                d['COMP. ITG'] = d['TOTAL DESC POR INTEGRACION']
                 d['COMP. ITG s/IVA'] = d['COMP. ITG'] / IVA
-                d['COMP. ATS'] = np.where(es_ats, d[col_desc_atri] if col_desc_atri else 0, 0.0)
+                d['COMP. ATS'] = np.where(es_ats, d['DESCUENTO_ATRIBUTOS'], 0.0)
                 d['COMP. ATS s/IVA'] = d['COMP. ATS'] / IVA
-                d['DESCUENTO_TOTAL s/IVA'] = (d[c_desc_tot] if c_desc_tot else 0) / IVA
+                d['DESCUENTO_TOTAL s/IVA'] = d['DESCUENTO_TOTAL'] / IVA
                 d['COMP. TOTAL s/IVA'] = d['COMP. ITG s/IVA'] + d['COMP. ATS s/IVA']
-                
-                d['RECAUDACION_CALC'] = (d[c_deb] if c_deb else 0) * u
-                d['DESC_TOTAL_CALC'] = ((d[c_tar] if c_tar else 0) - (d[c_deb] if c_deb else 0)) * u
-                d['COMP_ITG_CALC'] = (d[c_desc_x_int] if c_desc_x_int else 0) * u
-                d['COMP_ATS_CALC'] = np.where(es_ats, ((d[c_tar] if c_tar else 0) - (d[c_deb] if c_deb else 0) - (d[c_desc_x_int] if c_desc_x_int else 0)) * u, 0.0)
+
+                d['RECAUDACION_CALC'] = d['DEBITADO'] * u
+                d['DESC_TOTAL_CALC'] = (d['TARIFA'] - d['DEBITADO']) * u
+                d['COMP_ITG_CALC'] = d['DESCUENTO X INTEGRACION'] * u
+                d['COMP_ATS_CALC'] = np.where(es_ats, (d['TARIFA'] - d['DEBITADO'] - d['DESCUENTO X INTEGRACION']) * u, 0.0)
                 d['DIF_RECAUDACION'] = (d['RECAUDACION_CALC'] - d['RECAUDACION']).round(2)
-                d['DIF_DESC_TOTAL'] = (d['DESC_TOTAL_CALC'] - (d[c_desc_tot] if c_desc_tot else 0)).round(2)
+                d['DIF_DESC_TOTAL'] = (d['DESC_TOTAL_CALC'] - d['DESCUENTO_TOTAL']).round(2)
                 d['DIF_ITG'] = (d['COMP_ITG_CALC'] - d['COMP. ITG']).round(2)
                 d['DIF_ATS'] = (d['COMP_ATS_CALC'] - d['COMP. ATS']).round(2)
 
+                # ----------------------------------------------------------------
+                # 8) SEPARACIÓN BENEFICIARIAS / NO BENEFICIARIAS
+                # ----------------------------------------------------------------
                 df_final = d[d['ES_BENEFICIARIA'] == 'SI'].copy()
                 df_no_benef = d[d['ES_BENEFICIARIA'] == 'NO'].copy()
+
+                total_usos = d['CANTIDAD_USOS'].sum()
+                usos_final = df_final['CANTIDAD_USOS'].sum()
+                usos_no_benef = df_no_benef['CANTIDAD_USOS'].sum()
+                if abs((usos_final + usos_no_benef) - total_usos) > 1:
+                    st.error("⚠️ La suma de usos Beneficiarios + No Beneficiarios no cierra contra el total del crudo. Hay pérdida de filas en algún paso previo.")
+                    return
 
                 ORDEN_BASE = [
                     'ID_EMPRESA', 'ID_EMPRESA_NOM', 'COINCIDE_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'LINEA_SILAS_DNGFF', 'RAMAL', 'TIPO_SERVICIO', 'INTERNO', 'DOMINIO', 'MK',
@@ -351,36 +451,39 @@ def modulo_dmk():
                     'COMP. ITG', 'COMP. ITG s/IVA', 'COMP. ATS', 'COMP. ATS s/IVA', 'COMP. TOTAL s/IVA',
                     'RECAUDACION_CALC', 'DESC_TOTAL_CALC', 'COMP_ITG_CALC', 'COMP_ATS_CALC', 'DIF_RECAUDACION', 'DIF_DESC_TOTAL', 'DIF_ITG', 'DIF_ATS',
                 ]
-                
                 df_final = df_final[[c for c in ORDEN_BASE if c in df_final.columns] + [c for c in df_final.columns if c not in ORDEN_BASE]]
                 df_no_benef = df_no_benef[[c for c in ORDEN_BASE if c in df_no_benef.columns] + [c for c in df_no_benef.columns if c not in ORDEN_BASE]]
 
-                c_us_df = buscar_col(df_final, 'CANTIDAD_USOS')
-                c_dt_df = buscar_col(df_final, 'DESCUENTO_TOTAL')
-                c_da_df = buscar_col(df_final, 'DESCUENTO_ATRIBUTOS')
-                c_di_df = buscar_col(df_final, 'TOTAL DESC POR INTEGRACION')
-                
-                AGG_ESTANDAR = dict(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG=('COMP. ITG', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS=('COMP. ATS', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'))
-                
+                # ----------------------------------------------------------------
+                # 9) TABLAS RESUMEN
+                # ----------------------------------------------------------------
+                AGG_ESTANDAR = dict(RECAUDACION=('RECAUDACION', 'sum'), USOS=('CANTIDAD_USOS', 'sum'), DESCUENTO_TOTAL=('DESCUENTO_TOTAL', 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG=('COMP. ITG', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS=('COMP. ATS', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'))
+
                 resumen_compensacion = resumir(df_final, ['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR)
                 resumen_unicos = df_final.groupby(['PROVINCIA', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).agg(LINEAS_SILAS_UNICAS=('LINEA_SILAS_DNGFF', 'nunique'), ID_LINEAS_UNICAS=('ID_LINEA', 'nunique'), RAMALES_UNICOS=('RAMAL', 'nunique'), EMPRESAS_UNICAS=('ID_EMPRESA', 'nunique'), INTERNOS_UNICOS=('INTERNO', 'nunique'), DOMINIOS_UNICOS=('DOMINIO', 'nunique')).reset_index()
                 resumen_energia = resumir(df_final[df_final['EN_PARQUE_MOVIL'] == 'SI'], ['ID_LINEA', 'LINEA_SILAS_DNGFF', 'PROVINCIA', 'AMBA', 'ENERGIA_DESC'], AGG_ESTANDAR)
-                resumen_contrato = df_final.groupby(['CONTRATO', 'AMBA'], dropna=False).agg(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=(c_da_df, 'sum')).reset_index()
-                c_mp = buscar_col(df_final, 'MEDIOS_DE_PAGO')
-                resumen_medio_pago = resumir(df_final, [c_mp, 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR)
-                control_cobertura = d.groupby(['ES_BENEFICIARIA', 'JURISDICCION', 'AMBA'], dropna=False).agg(**AGG_ESTANDAR, LINEAS=('ID_LINEA', 'nunique')).reset_index()
+                resumen_contrato = df_final.groupby(['CONTRATO', 'AMBA'], dropna=False).agg(RECAUDACION=('RECAUDACION', 'sum'), USOS=('CANTIDAD_USOS', 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=('DESCUENTO_ATRIBUTOS', 'sum')).reset_index()
+                resumen_medio_pago = resumir(df_final, ['MEDIOS_DE_PAGO', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR)
+                # Control_Cobertura se calcula SIEMPRE sobre "d" completo (no sobre df_final) —
+                # sumando SI + NO acá tiene que dar el total del crudo. Es la hoja de reconciliación.
+                control_cobertura = resumir(d, ['ES_BENEFICIARIA', 'JURISDICCION', 'AMBA'], AGG_ESTANDAR, LINEAS=('ID_LINEA', 'nunique'))
 
                 CLAVES_TARIFARIO = ['PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA', 'LINEA_SILAS_DNGFF', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'TARIFA', 'DEBITADO']
-                resumen_tarifario = df_final.groupby(CLAVES_TARIFARIO, dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=(c_da_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum')).reset_index()
+                resumen_tarifario = df_final.groupby(CLAVES_TARIFARIO, dropna=False).agg(USOS=('CANTIDAD_USOS', 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': ('TOTAL DESC POR INTEGRACION', 'sum')}, DESCUENTO_ATRIBUTOS=('DESCUENTO_ATRIBUTOS', 'sum'), DESCUENTO_TOTAL=('DESCUENTO_TOTAL', 'sum')).reset_index()
+
+                # Control: agrupar no debe perder ni duplicar nada frente a df_final.
+                dif_usos_tarifario = abs(resumen_tarifario['USOS'].sum() - df_final['CANTIDAD_USOS'].sum())
+                if dif_usos_tarifario > 1:
+                    st.warning(f"⚠️ Resumen_Tarifario no cierra contra Base: diferencia de {dif_usos_tarifario:,.0f} usos.")
 
                 def _listar(s): return ', '.join(str(v) for v in sorted(s.dropna().unique()))
-                no_benef_detalle = df_no_benef.groupby(['ID_LINEA', 'ID_EMPRESA'], dropna=False).agg(RAMALES=('RAMAL', _listar), CONTRATOS=('CONTRATO', _listar), RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=(c_da_df, 'sum')).reset_index().sort_values('USOS', ascending=False)
+                no_benef_detalle = df_no_benef.groupby(['ID_LINEA', 'ID_EMPRESA'], dropna=False).agg(RAMALES=('RAMAL', _listar), CONTRATOS=('CONTRATO', _listar), RECAUDACION=('RECAUDACION', 'sum'), USOS=('CANTIDAD_USOS', 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=('DESCUENTO_ATRIBUTOS', 'sum')).reset_index().sort_values('USOS', ascending=False)
 
                 df_tarifario_dominio = df_final.copy()
                 es_gasoil = (df_tarifario_dominio['TIPO_ENERGIA'] == 3).fillna(False).to_numpy()
                 df_tarifario_dominio['DOMINIO'] = np.where(es_gasoil, 'NO', df_tarifario_dominio['DOMINIO'])
                 df_tarifario_dominio['ENERGIA'] = df_tarifario_dominio['TIPO_ENERGIA']
-                resumen_tarifario_dominio = df_tarifario_dominio.groupby(CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'], dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=(c_da_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum')).reset_index()
+                resumen_tarifario_dominio = df_tarifario_dominio.groupby(CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'], dropna=False).agg(USOS=('CANTIDAD_USOS', 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': ('TOTAL DESC POR INTEGRACION', 'sum')}, DESCUENTO_ATRIBUTOS=('DESCUENTO_ATRIBUTOS', 'sum'), DESCUENTO_TOTAL=('DESCUENTO_TOTAL', 'sum')).reset_index()
 
                 HOJAS = {
                     'Resumen_Compensacion': resumen_compensacion, 'Resumen_Unicos': resumen_unicos, 'Resumen_Energia': resumen_energia,
@@ -395,7 +498,7 @@ def modulo_dmk():
                 }
 
                 base_621 = df_final[df_final['CONTRATO'].isin(CONTRATOS_ATS)]
-                resumen_621 = base_621.groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'RAMAL'], dropna=False).agg(**{'MONTO TOTAL COBRADO': ('RECAUDACION', 'sum')}, **{'CANTIDAD DE TRANSACCIONES': (c_us_df, 'sum')}, **{'DESCUENTO TOTAL ITG': ('COMP. ITG', 'sum')}, **{'DESCUENTO TOTAL ATS': ('COMP. ATS', 'sum')}, AMBA=('AMBA', 'first')).reset_index().rename(columns={'ID_LINEA': 'LINEA', 'RAZON_SOCIAL': 'RAZON SOCIAL'})
+                resumen_621 = base_621.groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'RAMAL'], dropna=False).agg(**{'MONTO TOTAL COBRADO': ('RECAUDACION', 'sum')}, **{'CANTIDAD DE TRANSACCIONES': ('CANTIDAD_USOS', 'sum')}, **{'DESCUENTO TOTAL ITG': ('COMP. ITG', 'sum')}, **{'DESCUENTO TOTAL ATS': ('COMP. ATS', 'sum')}, AMBA=('AMBA', 'first')).reset_index().rename(columns={'ID_LINEA': 'LINEA', 'RAZON_SOCIAL': 'RAZON SOCIAL'})
 
                 buf_resumenes = io.BytesIO()
                 with pd.ExcelWriter(buf_resumenes, engine='openpyxl') as writer:
@@ -410,23 +513,30 @@ def modulo_dmk():
                     formatear_excel(writer.sheets['ATS_621'], resumen_621, COLS_MONEDA)
                 buf_621.seek(0)
 
-                buf_csv = io.BytesIO()
-                df_final.to_csv(buf_csv, index=False, sep=';', encoding='utf-8-sig')
-                buf_csv.seek(0)
+                # El detalle transaccional completo (Base) va aparte en CSV: puede
+                # superar el límite de filas de una hoja de Excel (1.048.576).
+                buf_csv = None
+                if st.session_state.get("dmk_generar_csv_base", True):
+                    buf_csv = io.BytesIO()
+                    df_final.to_csv(buf_csv, index=False, sep=';', encoding='utf-8-sig')
+                    buf_csv.seek(0)
 
                 st.success("✅ ¡Liquidación procesada con éxito!")
                 st.markdown("### Resumen de la Corrida")
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Líneas Beneficiarias", f"{df_final['ID_LINEA'].nunique():,}")
-                c2.metric("Usos Totales", f"{df_final[c_us_df].sum():,}")
+                c2.metric("Usos Totales (Beneficiarias)", f"{df_final['CANTIDAD_USOS'].sum():,.0f}")
                 c3.metric("Recaudación", f"$ {df_final['RECAUDACION'].sum():,.2f}")
                 c4.metric("Compensación Total s/IVA", f"$ {df_final['COMP. TOTAL s/IVA'].sum():,.2f}")
-                
+                st.caption(f"Usos totales del crudo (Beneficiarias + No Beneficiarias): {total_usos:,.0f} — "
+                           f"reconciliá esta cifra contra la hoja **Control_Cobertura** (sumá SI + NO).")
+
                 st.markdown("### Descargas Disponibles")
-                d1, d2, d3 = st.columns(3)
-                d1.download_button("📥 Descargar Resúmenes (.xlsx)", data=buf_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                d2.download_button("📥 Descargar Reporte ATS 621 (.xlsx)", data=buf_621, file_name="DGGI_ATS_621.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                d3.download_button("📥 Descargar Base Detalle (.csv)", data=buf_csv, file_name="DGGI_Base_Detalle.csv", mime="text/csv", use_container_width=True)
+                cols_descarga = st.columns(3) if buf_csv is not None else st.columns(2)
+                cols_descarga[0].download_button("📥 Descargar Resúmenes (.xlsx)", data=buf_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                cols_descarga[1].download_button("📥 Descargar Reporte ATS 621 (.xlsx)", data=buf_621, file_name="DGGI_ATS_621.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                if buf_csv is not None:
+                    cols_descarga[2].download_button("📥 Descargar Base Detalle (.csv)", data=buf_csv, file_name="DGGI_Base_Detalle.csv", mime="text/csv", use_container_width=True)
 
             except Exception as e: st.error(f"Error procesando DMK: {e}")
 
@@ -459,7 +569,7 @@ def modulo_calculo_ttr():
             try:
                 if file_tarifario_dmk.name.endswith('.csv'): df1 = pd.read_csv(file_tarifario_dmk, sep=';', encoding='utf-8-sig')
                 else: df1 = pd.read_excel(file_tarifario_dmk)
-                
+
                 nom_ts = pd.read_excel(file_nom_ramal, sheet_name='NOMENCLADOR TS' if 'NOMENCLADOR TS' in pd.ExcelFile(file_nom_ramal).sheet_names else 0)
                 ttr_reso = pd.read_excel(file_ttr_reso, sheet_name='TTR')
                 ttr_sgii_uma2 = pd.read_excel(file_ttr_reso, sheet_name='SGII-UMA2')
@@ -486,7 +596,7 @@ def modulo_calculo_ttr():
                 }
                 tarifas_3 = {'1-4KMCN': (*get_lim('1-4KMCN'), "C"), '1-4KMEN': (*get_lim('1-4KMEN'), "E"), '1-4KMEAN': (*get_lim('1-4KMEAN'), "EA")}
                 tarifas_4 = {'1-4KMCSN': (*get_lim('1-4KMCSN'), "C"), '1-4KMESN': (*get_lim('1-4KMESN'), "E"), '1-4KMEASN': (*get_lim('1-4KMEASN'), "EA")}
-                
+
                 tarifas_7 = {
                     '5KPCN': (*get_lim('5KPCN'), "C", 5), '6KPCN': (*get_lim('6KPCN'), "C", 6), '7KPCN': (*get_lim('7KPCN'), "C", 7), '8KPCN': (*get_lim('8KPCN'), "C", 8), '9KPCN': (*get_lim('9KPCN'), "C", 9),
                     '5KPEN': (*get_lim('5KPEN'), "E", 5), '6KPEN': (*get_lim('6KPEN'), "E", 6), '7KPEN': (*get_lim('7KPEN'), "E", 7), '8KPEN': (*get_lim('8KPEN'), "E", 8), '9KPEN': (*get_lim('9KPEN'), "E", 9),
@@ -505,38 +615,41 @@ def modulo_calculo_ttr():
                 tarifas_ean_sn = {'1-4KMEASN2': get_lim('1-4KMEASN2')}
 
                 var_input = ['PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA', 'LINEA_SILAS_DNGFF', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'TARIFA', 'DEBITADO', 'DOMINIO', 'ENERGIA', 'USOS', 'RECAUDACION', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_ATRIBUTOS', 'DESCUENTO_TOTAL']
-                df2 = df1[[buscar_col(df1, c) for c in var_input if buscar_col(df1, c)]].copy()
-                c_gt = buscar_col(df2, 'GRUPO_TARIFARIO')
-                _df2_ = df2[df2[c_gt].isin(["SGI", "SGII", "SGIKM"])].copy() if c_gt else df2.copy()
-                
-                c_usos = buscar_col(_df2_, 'USOS')
-                c_tar = buscar_col(_df2_, 'TARIFA')
-                _df2_[c_usos] = pd.to_numeric(_df2_[c_usos].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0) if c_usos else 0
-                _df2_[c_tar] = pd.to_numeric(_df2_[c_tar].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0).round(2) if c_tar else 0
-                
+                df2 = pd.DataFrame()
+                for c in var_input:
+                    col_real = buscar_col(df1, c)
+                    df2[c] = df1[col_real] if col_real else pd.Series(dtype='object')
+
+                c_gt = 'GRUPO_TARIFARIO'
+                _df2_ = df2[df2[c_gt].isin(["SGI", "SGII", "SGIKM"])].copy()
+
+                _df2_['USOS'] = pd.to_numeric(_df2_['USOS'].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0)
+                _df2_['TARIFA'] = pd.to_numeric(_df2_['TARIFA'].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0).round(2)
+
                 c_ramal_nom = buscar_col(nom_ts, 'IdRamalNS', 'RAMAL')
                 c_ts_nom = buscar_col(nom_ts, 'TIPO DE SERVICIO FINAL', 'SERVICIO', 'TS')
-                c_ramal_df = buscar_col(_df2_, 'RAMAL')
 
                 if c_ramal_nom: nom_ts[c_ramal_nom] = nom_ts[c_ramal_nom].astype(str)
-                if c_ramal_df: _df2_[c_ramal_df] = _df2_[c_ramal_df].astype(str)
-                _df2_ = pd.merge(_df2_, nom_ts[[c_ramal_nom, c_ts_nom]] if c_ramal_nom and c_ts_nom else nom_ts, how='left', left_on=c_ramal_df, right_on=c_ramal_nom)
-                
-                c_ts_merge = buscar_col(_df2_, 'TIPO DE SERVICIO FINAL', 'SERVICIO')
-                if c_ts_merge: _df2_.rename(columns={c_ts_merge: 'TipoServicio'}, inplace=True)
-                _df2_['TipoServicio2'] = _df2_['TipoServicio'].replace('SR', 'E') if 'TipoServicio' in _df2_.columns else 'C'
-                
-                c_contrato = buscar_col(_df2_, 'CONTRATO')
-                _df2_['sin_nominalizar'] = np.where(_df2_[c_contrato] == 627, 1, 0) if c_contrato else 0
-                _df2_['PASES'] = np.where((_df2_[c_tar] >= 0) & (_df2_[c_tar] <= 0.5), 1, 0)
-                _df2_['FILTRO_1'] = np.where((_df2_[c_tar] < filtro_tarifa_vieja) & (_df2_[c_tar] > 0.5), 1, 0)
+                _df2_["RAMAL"] = _df2_["RAMAL"].astype(str)
 
-                for col, (lim_inf, lim_sup) in tarifas_1.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio'] != "SR"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_2.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio'] != "SR"), 1, 0)
-                for col, (lim_inf, lim_sup, ts_val) in tarifas_3.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
-                for col, (lim_inf, lim_sup, ts_val) in tarifas_4.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
-                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_7.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] < lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
-                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_8.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] < lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
+                if c_ramal_nom and c_ts_nom:
+                    _df2_ = pd.merge(_df2_, nom_ts[[c_ramal_nom, c_ts_nom]], how='left', left_on='RAMAL', right_on=c_ramal_nom)
+                    _df2_.rename(columns={c_ts_nom: 'TipoServicio'}, inplace=True)
+                else:
+                    _df2_['TipoServicio'] = 'C'
+
+                _df2_['TipoServicio2'] = _df2_['TipoServicio'].replace('SR', 'E')
+
+                _df2_['sin_nominalizar'] = np.where(_df2_['CONTRATO'] == 627, 1, 0)
+                _df2_['PASES'] = np.where((_df2_['TARIFA'] >= 0) & (_df2_['TARIFA'] <= 0.5), 1, 0)
+                _df2_['FILTRO_1'] = np.where((_df2_['TARIFA'] < filtro_tarifa_vieja) & (_df2_['TARIFA'] > 0.5), 1, 0)
+
+                for col, (lim_inf, lim_sup) in tarifas_1.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio'] != "SR"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_2.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio'] != "SR"), 1, 0)
+                for col, (lim_inf, lim_sup, ts_val) in tarifas_3.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
+                for col, (lim_inf, lim_sup, ts_val) in tarifas_4.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
+                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_7.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] < lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
+                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_8.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] < lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
 
                 c_sn_cn = ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN']
                 c_kmn_cn = ['1-4KMCN']
@@ -546,11 +659,11 @@ def modulo_calculo_ttr():
                 c_sn_ean = ['1SEAN', '2SEAN', '3SEAN', '4SEAN', '5SEAN']
                 c_kmn_ean = ['1-4KMEAN']
                 c_kpn_ean = c_kpn_en + ['5KPEN', '6KPEN', '7KPEN', '8KPEN', '9KPEN']
-                
-                for col, (lim_inf, lim_sup) in tarifas_cn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_cn].sum(axis=1) == 0) & (_df2_[c_kmn_cn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_en.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_en].sum(axis=1) == 0) & (_df2_[c_kmn_en].sum(axis=1) == 0) & (_df2_[c_kpn_en].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_ean.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_ean].sum(axis=1) == 0) & (_df2_[c_kmn_ean].sum(axis=1) == 0) & (_df2_[c_kpn_ean].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                
+
+                for col, (lim_inf, lim_sup) in tarifas_cn.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_cn].sum(axis=1) == 0) & (_df2_[c_kmn_cn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_en.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_en].sum(axis=1) == 0) & (_df2_[c_kmn_en].sum(axis=1) == 0) & (_df2_[c_kpn_en].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_ean.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_ean].sum(axis=1) == 0) & (_df2_[c_kmn_ean].sum(axis=1) == 0) & (_df2_[c_kpn_ean].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+
                 c_sn_cSn = ['1SCSN', '2SCSN', '3SCSN', '4SCSN', '5SCSN']
                 c_kmn_cSn = ['1-4KMCSN']
                 c_sn_eSn = ['1SESN', '2SESN', '3SESN', '4SESN', '5SESN']
@@ -560,9 +673,9 @@ def modulo_calculo_ttr():
                 c_kmn_eaSn = ['1-4KMEASN']
                 c_kpn_eaSn = c_kpn_eSn + ['5KPESN', '6KPESN', '7KPESN', '8KPESN', '9KPESN']
 
-                for col, (lim_inf, lim_sup) in tarifas_cn_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_cSn].sum(axis=1) == 0) & (_df2_[c_kmn_cSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_en_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eSn].sum(axis=1) == 0) & (_df2_[c_kmn_eSn].sum(axis=1) == 0) & (_df2_[c_kpn_eSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_ean_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eaSn].sum(axis=1) == 0) & (_df2_[c_kmn_eaSn].sum(axis=1) == 0) & (_df2_[c_kpn_eaSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_cn_sn.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_cSn].sum(axis=1) == 0) & (_df2_[c_kmn_cSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_en_sn.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eSn].sum(axis=1) == 0) & (_df2_[c_kmn_eSn].sum(axis=1) == 0) & (_df2_[c_kpn_eSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_ean_sn.items(): _df2_[col] = np.where((_df2_['TARIFA'] >= lim_inf - 0.5) & (_df2_['TARIFA'] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eaSn].sum(axis=1) == 0) & (_df2_[c_kmn_eaSn].sum(axis=1) == 0) & (_df2_[c_kpn_eaSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
 
                 _df2_['Filtro1-4KMCN'] = np.where((_df2_['TipoServicio2'] == 'C') & (_df2_[c_sn_en + c_sn_ean].sum(axis=1) != 0) & (_df2_['1-4KMCN2'] == 1), 4, 0)
                 _df2_['Filtro1-4KMEN'] = np.where((_df2_['TipoServicio2'] == 'E') & (_df2_[c_sn_ean].sum(axis=1) != 0) & (_df2_['1-4KMEN2'] == 1), 4, 0)
@@ -587,7 +700,7 @@ def modulo_calculo_ttr():
                 _df2_['compilado_ts'] = np.select([((_df2_[['km&p_c', 'km&p_e', 'km&p_ea']] == 1).any(axis=1)) & (_df2_[['seccionada_correcta_1', 'seccionada_correcta_2', 'seccionada_correcta_3', 'seccionada_correcta_4']].sum(axis=1) == 0), (_df2_['sec_c'] == 1), (_df2_['sec_e'] == 1), (_df2_['sec_ea'] == 1), (_df2_['PASES'] == 1), (_df2_[['sec_c', 'sec_e', 'sec_ea', 'km&p_c', 'km&p_e', 'km&p_ea']].sum(axis=1) == 0)], [_df2_['TipoServicio2'], 'C', 'E', 'EA', _df2_['TipoServicio2'], _df2_['TipoServicio2']], default="S/D")
 
                 _df2_['norm_por_tarifa'] = np.where(((_df2_[c_sn_cn + c_sn_en + c_sn_ean].sum(axis=1) > 0) | (_df2_[['1-4KMCN', '1-4KMEN', '1-4KMEAN']].sum(axis=1) > 0) | (_df2_[c_kpn_en + c_kpn_ean].sum(axis=1) > 0) | (_df2_[['1-4KMCN2', '1-4KMEN2', '1-4KMEAN2']].sum(axis=1) > 0)), "N", np.where(_df2_['FILTRO_1'] == 1, "Tarifa Vieja", np.where(_df2_['PASES'] == 1, "N", "SN")))
-                
+
                 _df2_['tarifa_s'] = np.where(((_df2_[c_sn_cn + c_sn_en + c_sn_ean + c_sn_cSn + c_sn_eSn + c_sn_eaSn].sum(axis=1) > 0)) & (_df2_[['Filtro1-4KMCN', 'Filtro1-4KMEN', 'Filtro1-4KMEAN', 'Filtro1-4KMCSN', 'Filtro1-4KMESN', 'Filtro1-4KMEASN']].sum(axis=1) == 0) & (((_df2_['compilado_ts'] == 'C') & (_df2_['sec_c'] == 1)) | ((_df2_['compilado_ts'] == 'E') & (_df2_['sec_e'] == 1)) | ((_df2_['compilado_ts'] == 'EA') & (_df2_['sec_ea'] == 1))), 1, 0)
                 _df2_['tarifa_km'] = np.where(((_df2_[['1-4KMCN', '1-4KMEN', '1-4KMEAN', '1-4KMCSN','1-4KMESN', '1-4KMEASN']].sum(axis=1) > 0) | (_df2_[['1-4KMCN2', '1-4KMEN2', '1-4KMEAN2', '1-4KMCSN2', '1-4KMESN2', '1-4KMEASN2']].sum(axis=1) > 0)) & (_df2_[['seccionada_correcta_1', 'seccionada_correcta_3', 'seccionada_correcta_2', 'seccionada_correcta_4']].sum(axis=1) == 0), 1, 0)
                 _df2_['tarifa_kp'] = np.where((_df2_[c_kpn_en + c_kpn_ean + c_kpn_eSn + c_kpn_eaSn].sum(axis=1) > 0), 1, 0)
@@ -629,6 +742,7 @@ def modulo_calculo_ttr():
                 if c_concat_uma and c_concat_uma in _df2_.columns: _df2_ = _df2_.drop(columns=[c_concat_uma])
 
                 _df2_['Tarifa TRSUBE_FINAL'] = np.where(_df2_['Tarifa TRSUBE2'] == 0, _df2_['Tarifa TRSUBE'], _df2_['Tarifa TRSUBE2'])
+                c_usos = buscar_col(_df2_, 'USOS')
                 _df2_['Recaudacion_TRSUBE'] = _df2_['Tarifa TRSUBE_FINAL'] * _df2_[c_usos]
 
                 c_ene = buscar_col(_df2_, 'ENERGIA')
@@ -637,6 +751,7 @@ def modulo_calculo_ttr():
                     _df2_['Recaudacion_TRSUBE'] = _df2_['Recaudacion_TRSUBE'] * np.select(condiciones, [1.3, 1.5, 1.0], default=1)
 
                 _df2_['SubSeccion'] = None
+                c_tar = 'TARIFA'
                 def asignar_subsecciones(df, dict_t, flt_sn):
                     for _, (l_inf, l_sup, t_srv, sec) in dict_t.items():
                         s_rng = np.linspace(l_inf, l_sup, 4)
@@ -668,7 +783,7 @@ st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", widt
 st.sidebar.title("Menú TTR_ARIA")
 modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
 st.sidebar.markdown("---")
-st.sidebar.info("Proyecto ARIA v2.5\n\nMotor unificado de cálculos TTR.")
+st.sidebar.info("Proyecto ARIA v2.7\n\nMotor unificado de cálculos TTR.")
 
 if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
 elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
