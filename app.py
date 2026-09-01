@@ -199,7 +199,7 @@ def modulo_dmk():
     st.header("1. Carga de Archivos de Entrada")
     col1, col2 = st.columns(2)
     file_dggi = col1.file_uploader("1. Base DGGI (CSV o Excel)", type=['csv', 'xlsx'])
-    file_nom_univ = col2.file_uploader("2. Nomenclador Líneas (Universo)", type=['xlsx'])
+    file_nom_univ = col2.file_uploader("2. Nomenclador Líneas (Nomenclador.v2)", type=['xlsx'])
     file_nom_ramal = col1.file_uploader("3. Nomenclador Ramal - TS", type=['xlsx'])
     file_pme = col2.file_uploader("4. Parque Móvil - Energías", type=['xlsx'])
 
@@ -211,7 +211,11 @@ def modulo_dmk():
         with st.spinner("Procesando pipeline de datos DMK..."):
             try:
                 df_raw = pd.read_csv(file_dggi, encoding='ISO-8859-1', delimiter=';') if file_dggi.name.endswith('.csv') else pd.read_excel(file_dggi)
-                nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name='Nomenclador_Interior')
+                
+                # ADAPTACIÓN: Lectura de la estructura del Nomenclador v2 (hoja 01. NOMENCLADOR)
+                nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name='01. NOMENCLADOR')
+                nom_lineas_raw.columns = nom_lineas_raw.columns.str.strip()
+                
                 nom_ramal_raw = pd.read_excel(file_nom_ramal, sheet_name='NOMENCLADOR TS')
                 pme_raw = pd.read_excel(file_pme, sheet_name='Nomenclador_PM_E')
                 tipo_energia_raw = pd.read_excel(file_pme, sheet_name='Tipo_Energia')
@@ -226,13 +230,21 @@ def modulo_dmk():
                 for c in ['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'INTERNO']:
                     if c in df_base.columns: df_base[c] = pd.to_numeric(df_base[c], errors='coerce').astype('Int64')
 
-                n_lin = nom_lineas_raw[['ID_LINEA', 'GT', 'SILAS - AMBA', 'ID_EMPRESA', 'Razon social', 'Jurisdiccion', 'Provincia', 'Localidad', 'Departamento']].copy()
-                n_lin = n_lin.rename(columns={'GT': 'GRUPO_TARIFARIO', 'SILAS - AMBA': 'LINEA_SILAS_DNGFF', 'ID_EMPRESA': 'ID_EMPRESA_NOM', 'Razon social': 'RAZON_SOCIAL', 'Jurisdiccion': 'JURISDICCION', 'Provincia': 'PROVINCIA', 'Localidad': 'MUNICIPIO', 'Departamento': 'DEPARTAMENTO'})
-                n_lin['ID_LINEA'] = pd.to_numeric(n_lin['ID_LINEA'], errors='coerce').astype('Int64')
-                n_lin['ID_EMPRESA_NOM'] = pd.to_numeric(n_lin['ID_EMPRESA_NOM'], errors='coerce').astype('Int64')
+                # ADAPTACIÓN: Mapeo exacto de las columnas del Nomenclador v2
+                n_lin = pd.DataFrame()
+                n_lin['ID_LINEA'] = pd.to_numeric(nom_lineas_raw.get('ID_LINEA'), errors='coerce').astype('Int64')
+                n_lin['GRUPO_TARIFARIO'] = nom_lineas_raw.get('GT', pd.Series(dtype='string'))
+                n_lin['LINEA_SILAS_DNGFF'] = nom_lineas_raw.get('Linea SILAS DNGFF', pd.Series(dtype='string'))
+                n_lin['ID_EMPRESA_NOM'] = pd.to_numeric(nom_lineas_raw.get('IDEMPRESA'), errors='coerce').astype('Int64')
+                n_lin['RAZON_SOCIAL'] = nom_lineas_raw.get('RAZON_SOCIAL', pd.Series(dtype='string'))
+                n_lin['JURISDICCION'] = nom_lineas_raw.get('JURIS', pd.Series(dtype='string'))
+                n_lin['PROVINCIA'] = nom_lineas_raw.get('PROVINCIA', pd.Series(dtype='string'))
+                n_lin['MUNICIPIO'] = nom_lineas_raw.get('MUNICIPIO', pd.Series(dtype='string'))
+                n_lin['DEPARTAMENTO'] = SIN_DATO # No presente en Nomenclador v2
+                
                 for c in ['GRUPO_TARIFARIO', 'LINEA_SILAS_DNGFF', 'RAZON_SOCIAL', 'JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'DEPARTAMENTO']:
                     n_lin[c] = n_lin[c].astype('string').str.strip()
-                nom_lineas = n_lin.dropna(subset=['ID_LINEA'])
+                nom_lineas = n_lin.dropna(subset=['ID_LINEA']).drop_duplicates(subset=['ID_LINEA'])
 
                 n_ram = nom_ramal_raw[['IdRamalNS', 'TIPO DE SERVICIO FINAL']].copy()
                 n_ram = n_ram.rename(columns={'IdRamalNS': 'RAMAL', 'TIPO DE SERVICIO FINAL': 'TIPO_SERVICIO'})
@@ -590,7 +602,7 @@ st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", widt
 st.sidebar.title("Menú TTR_ARIA")
 modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
 st.sidebar.markdown("---")
-st.sidebar.info("Proyecto ARIA v2.2\n\nMotor unificado de cálculos TTR.")
+st.sidebar.info("Proyecto ARIA v2.3\n\nMotor unificado de cálculos TTR.")
 
 if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
 elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
