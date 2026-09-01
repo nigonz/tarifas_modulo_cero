@@ -130,14 +130,18 @@ if st.button("Generar TTR_ARIA", type="primary"):
                     nuevos_limites_inf.append(val_inf)
                     nuevos_limites_sup.append(val_sup)
 
-                df_hist[f'{mes_nuevo_nombre}'] = nuevos_limites_inf
-                col_sup_name = f'{mes_nuevo_nombre}_Sup'
+                # CORRECCIÓN ACÁ: Usamos mes_act en lugar de la variable vieja
+                df_hist[f'{mes_act}'] = nuevos_limites_inf
+                col_sup_name = f'{mes_act}_Sup'
                 df_hist[col_sup_name] = nuevos_limites_sup
+
+                # Renombrar para que la columna superior quede en blanco visualmente como querías
+                df_export = df_hist.rename(columns=lambda x: " " if x == col_sup_name else ("" if "Unnamed" in str(x) else x))
 
                 # 3. Exportar a Excel y aplicar formato '0.00' a nivel celda con openpyxl
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_hist.to_excel(writer, index=False, sheet_name='Matriz_ARIA')
+                    df_export.to_excel(writer, index=False, sheet_name='Matriz_ARIA')
 
                 buffer.seek(0)
                 wb = openpyxl.load_workbook(buffer)
@@ -154,7 +158,7 @@ if st.button("Generar TTR_ARIA", type="primary"):
                 final_buffer.seek(0)
 
                 st.success("✅ ¡Matriz generada con éxito, ruido binario erradicado y celdas formateadas a '0.00'!")
-                st.dataframe(df_hist.head(15))
+                st.dataframe(df_export.head(15))
 
                 st.download_button(
                     label="📥 Descargar Matriz Definitiva (.xlsx)",
