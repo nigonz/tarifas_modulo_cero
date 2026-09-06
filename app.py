@@ -130,7 +130,7 @@ def modulo_tarifas():
                                     mapa_km2 = {'45-60':('1-4KMCN','5KPCN'), '60-75':('1-4KMEN','5KPEN'), '75-90':('1-4KMEAN','5KPEAN'),
                                                 '90-150':('1-4KMCSN','5KPCSN'), '0-3':('1-4KMESN','5KPESN'), '3-6':('1-4KMEASN','5KPEASN')}
                                     ref_inf, ref_sup = mapa_km2.get(km_str, ('1-4KMCN','5KPCN'))
-                                    val_inf, val_sup = mapa_resultados.get(ref_inf, (0,0))[0], mapa_resultados.get(ref_sup, (0,0))[1]
+                                    val_inf, val_sup = mapa_resultados.get(ref_inf, (0,0))[1], mapa_resultados.get(ref_sup, (0,0))[0]
                                 else:
                                     base_key_inf = base_key_sup = "1SCN"
                                     if concat.startswith("1S"): base_key_inf = base_key_sup = "1SCN"
