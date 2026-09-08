@@ -103,7 +103,6 @@ def modulo_tarifas():
                             c_nom = buscar_col(df_hist, 'nominaliz')
                             c_km = buscar_col(df_hist, 'km')
 
-                            # PREVENCIÓN DEL ERROR: NONE
                             if None in [c_concat, c_ts, c_nom, c_km]:
                                 st.warning("⚠️ Error de lectura: No se encontraron las columnas clave (CONCAT, TS, Nominalizacion o KM). Verificá que el archivo no tenga filas en blanco al principio.")
                                 return
@@ -112,7 +111,6 @@ def modulo_tarifas():
                             cols_historicas_meses = []
                             for col in df_hist.columns:
                                 if col not in columnas_protegidas and not str(col).startswith('Unnamed'):
-                                    # TRUNCAMIENTO ESTRICTO DE HISTÓRICOS
                                     df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce').apply(truncar_a_2)
                                     cols_historicas_meses.append(col)
 
@@ -126,7 +124,6 @@ def modulo_tarifas():
                                     val_1_4kmcn_viejo = df_hist.loc[idx_1_4kmcn, col_mes_anterior].mode()[0]
                                     val_1scn_nuevo = dict_bases_inf.get('1SCN', 0.0)
                                     factor_aumento = (val_1scn_nuevo / float(val_1scn_viejo)) if (pd.notna(val_1scn_viejo) and val_1scn_viejo != 0) else 1.0
-                                    # TRUNCAMOS LA DINÁMICA
                                     if pd.notna(val_1_4kmcn_viejo): base_1_4kmcn_dinamica = truncar_a_2(float(val_1_4kmcn_viejo) * factor_aumento)
 
                             nuevos_limites_inf, nuevos_limites_sup = [], []
@@ -165,7 +162,6 @@ def modulo_tarifas():
                                     mult_ts = 1.75 if ts == "EA" else (1.25 if ts == "E" else 1.0)
                                     mult_nom = 2.0 if "SN" in nom else 1.0
 
-                                    # TRUNCAMIENTO DE TARIFA FINAL
                                     val_inf = truncar_a_2(base_inf * mult_ts * mult_nom)
                                     val_sup = truncar_a_2(base_sup * mult_ts * mult_nom)
                                     
@@ -203,7 +199,7 @@ def modulo_tarifas():
                         except Exception as e: st.error(f"Error procesando la matriz: {e}")
 
 # ==============================================================================
-# MÓDULO 1: DMK (ITG y ATS) - LECTURA POR CHUNKS (CERO OOM)
+# MÓDULO 1: DMK (ITG y ATS) - LECTURA POR CHUNKS (CERO OOM Y NOMBRES DIFUSOS)
 # ==============================================================================
 def modulo_dmk():
     st.title("🧮 TTR_ARIA - Módulo 1: Liquidación DMK (ITG/ATS)")
@@ -224,7 +220,7 @@ def modulo_dmk():
 
     st.header("1. Carga de Archivos de Entrada")
     col1, col2 = st.columns(2)
-    file_dggi = col1.file_uploader("1. Base DGGI (CSV pesado)", type=['csv', 'xlsx'])
+    file_dggi = col1.file_uploader("1. Base DGGI (CSV pesado virgen)", type=['csv', 'xlsx'])
     file_nom_univ = col2.file_uploader("2. Nomenclador Líneas (Nomenclador.v2)", type=['xlsx'])
     file_nom_ramal = col1.file_uploader("3. Nomenclador Ramal - TS", type=['xlsx'])
     file_pme = col2.file_uploader("4. Parque Móvil - Energías", type=['xlsx'])
@@ -236,7 +232,7 @@ def modulo_dmk():
             
         with st.spinner("Procesando pipeline de datos DMK (Lectura por bloques RAM-Safe)..."):
             try:
-                # 1. Cargar Nomencladores en RAM (son livianos)
+                # 1. Cargar Nomencladores
                 nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name='01. NOMENCLADOR')
                 nom_lineas_raw.columns = nom_lineas_raw.columns.str.strip()
                 nom_ramal_raw = pd.read_excel(file_nom_ramal, sheet_name='NOMENCLADOR TS')
@@ -245,7 +241,6 @@ def modulo_dmk():
                 tipo_energia_raw = pd.read_excel(file_pme, sheet_name='Tipo_Energia')
                 tipo_energia_raw.columns = tipo_energia_raw.columns.str.strip().str.upper().str.replace('Í', 'I').str.replace('É', 'E')
 
-                # Preparar Nomencladores limpios
                 n_lin = pd.DataFrame()
                 c_id_linea = buscar_col(nom_lineas_raw, 'ID_LINEA', 'ID LINEA')
                 c_gt = buscar_col(nom_lineas_raw, 'GT', 'GRUPO_TARIFARIO', 'GRUPO TARIFARIO')
@@ -290,10 +285,9 @@ def modulo_dmk():
                 del nom_lineas_raw, nom_ramal_raw, pme_raw, tipo_energia_raw, n_lin, n_ram, p
                 gc.collect()
 
-                # 2. IDENTIFICACIÓN DE COLUMNAS DEL ARCHIVO PESADO
+                # 2. DETECCIÓN EXACTA DE COLUMNAS (NO STRIP PREVIO)
                 file_dggi.seek(0)
                 df_head = pd.read_csv(file_dggi, encoding='ISO-8859-1', delimiter=';', nrows=0) if file_dggi.name.endswith('.csv') else pd.read_excel(file_dggi, nrows=0)
-                df_head.columns = df_head.columns.str.strip()
 
                 mapa_columnas = {
                     'RECAUDACION': ['MONTO', 'RECAUDACION'], 'DOMINIO': ['DOMINIO'], 'MK': ['MK'],
@@ -306,15 +300,19 @@ def modulo_dmk():
 
                 columnas_existentes = []
                 rename_dict = {}
-                for canonico, busquedas in mapa_columnas.items():
-                    col_real = buscar_col(df_head, *busquedas)
-                    if col_real:
-                        columnas_existentes.append(col_real)
-                        rename_dict[col_real] = canonico
+                
+                # Buscamos la columna cruda exacta comparando su versión "limpia"
+                for col_raw in df_head.columns:
+                    col_clean = str(col_raw).strip().upper()
+                    for canonico, busquedas in mapa_columnas.items():
+                        if col_clean in [b.upper() for b in busquedas]:
+                            columnas_existentes.append(col_raw)
+                            rename_dict[col_raw] = canonico
+                            break
 
                 file_dggi.seek(0)
 
-                # 3. LECTURA POR CHUNKS (La magia anti-colapso)
+                # 3. LECTURA POR CHUNKS (Cero colapsos de RAM)
                 df_final_chunks = []
                 df_no_benef_chunks = []
                 
@@ -339,7 +337,6 @@ def modulo_dmk():
                     for c in ['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'INTERNO']:
                         if c in chunk.columns: chunk[c] = pd.to_numeric(chunk[c], errors='coerce').astype('Int32')
 
-                    # Merge & Cálculos en caliente (Chunk)
                     chunk = chunk.merge(nom_lineas, on='ID_LINEA', how='left', validate='m:1')
                     chunk = chunk.merge(nom_ramal, on='RAMAL', how='left', validate='m:1')
                     chunk = chunk.merge(pme, on='DOMINIO', how='left', validate='m:1')
@@ -368,7 +365,8 @@ def modulo_dmk():
                     chunk['TIPO_BENEFICIO'] = np.select([es_ats, es_est, tiene_desc & ~es_ats & ~es_est], ['ATS', 'ESTUDIANTIL', 'OTRO BENEFICIO'], default='SIN BENEFICIO')
 
                     u = chunk['CANTIDAD_USOS']
-                    # TRUNCADO EXACTO EN DMK TAMBIÉN
+                    
+                    # CÁLCULOS ESTRICTAMENTE TRUNCADOS (NADA DE ROUND)
                     chunk['COMP. ITG'] = chunk['TOTAL DESC POR INTEGRACION']
                     chunk['COMP. ITG s/IVA'] = np.trunc((chunk['COMP. ITG'] / IVA) * 100) / 100.0
                     chunk['COMP. ATS'] = np.where(es_ats, chunk['DESCUENTO_ATRIBUTOS'], 0.0)
@@ -393,7 +391,6 @@ def modulo_dmk():
                 progreso.progress(100)
                 texto_estado.text("Consolidando información procesada...")
 
-                # 4. Unir todos los bloques livianos
                 df_final = pd.concat(df_final_chunks, ignore_index=True) if df_final_chunks else pd.DataFrame()
                 df_no_benef = pd.concat(df_no_benef_chunks, ignore_index=True) if df_no_benef_chunks else pd.DataFrame()
                 
@@ -480,7 +477,7 @@ def modulo_dmk():
                 del df_final, df_no_benef, base_621, df_tarifario_dominio
                 gc.collect()
 
-                st.success("✅ ¡Liquidación procesada con éxito (Safe-RAM / Chunked)!")
+                st.success("✅ ¡Liquidación procesada con éxito (Safe-RAM / Extractor Blindado)!")
                 st.markdown("### Descargas Disponibles")
                 d1, d2, d3 = st.columns(3)
                 d1.download_button("📥 Descargar Resúmenes (.xlsx)", data=buf_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -579,7 +576,6 @@ def modulo_calculo_ttr():
                 c_tar = buscar_col(_df2_, 'TARIFA')
                 _df2_[c_usos] = pd.to_numeric(_df2_[c_usos].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0) if c_usos else 0
                 
-                # TRUNCAMIENTO ESTRICTO EN VEZ DE .ROUND(2)
                 _df2_[c_tar] = pd.to_numeric(_df2_[c_tar].astype(str).replace({',': ''}, regex=True), errors='coerce').apply(truncar_a_2)
                 
                 c_ramal_nom = buscar_col(nom_ts, 'IdRamalNS', 'RAMAL')
@@ -701,7 +697,7 @@ def modulo_calculo_ttr():
 
                 _df2_['Tarifa TRSUBE_FINAL'] = np.where(_df2_['Tarifa TRSUBE2'] == 0, _df2_['Tarifa TRSUBE'], _df2_['Tarifa TRSUBE2'])
                 
-                # TRUNCAMIENTO EXACTO PARA TRSUBE
+                # TRUNCAMIENTO EXACTO
                 _df2_['Recaudacion_TRSUBE'] = np.trunc((_df2_['Tarifa TRSUBE_FINAL'] * _df2_[c_usos]) * 100) / 100.0
 
                 c_ene = buscar_col(_df2_, 'ENERGIA')
@@ -739,7 +735,7 @@ st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", widt
 st.sidebar.title("Menú TTR_ARIA")
 modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
 st.sidebar.markdown("---")
-st.sidebar.info("Proyecto ARIA v3.0 (Chunks & Truncamiento Estricto)\n\nMotor unificado de cálculos TTR.")
+st.sidebar.info("Proyecto ARIA v3.1 (Chunks, Truncamiento Estricto & Extractor Blindado)\n\nMotor unificado de cálculos TTR.")
 
 if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
 elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
