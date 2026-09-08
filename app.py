@@ -50,9 +50,7 @@ def formatear_excel(ws, df, cols_moneda):
             if i in indices_moneda:
                 try:
                     if celda.value is not None:
-                        # Forzamos a que Excel lo interprete como número flotante real
                         celda.value = float(celda.value)
-                        # Este formato Excel lo localiza al idioma de tu PC (punto para miles, coma decimal)
                         celda.number_format = '#,##0.00'
                 except:
                     pass
@@ -222,7 +220,6 @@ def modulo_tarifas():
                             st.rerun()
                         except Exception as e: st.error(f"Error procesando la matriz: {e}")
 
-        # BOTÓN EN CACHÉ (Evita recargas vacías)
         if st.session_state.matriz_procesada is not None:
             st.success(f"✅ ¡Matriz de {st.session_state.matriz_nombre} generada con éxito (Truncada a 2 decimales exactos)!")
             st.download_button(label=f"📥 Descargar Matriz Definitiva {st.session_state.matriz_nombre} (.xlsx)", 
@@ -237,7 +234,6 @@ def modulo_dmk():
     st.title("🧮 TTR_ARIA - Módulo 1: Liquidación DMK (ITG/ATS)")
     st.markdown("Pipeline integral de enriquecimiento, control y generación de reportes de compensaciones.")
 
-    # INICIALIZAR ESTADO PARA EVITAR REINICIOS
     if "dmk_resumenes" not in st.session_state:
         st.session_state.dmk_resumenes = None
         st.session_state.dmk_621 = None
@@ -259,7 +255,7 @@ def modulo_dmk():
     st.header("1. Carga de Archivos de Entrada")
     col1, col2 = st.columns(2)
     file_dggi = col1.file_uploader("1. Base DGGI (CSV pesado virgen)", type=['csv', 'xlsx'])
-    file_nom_univ = col2.file_uploader("2. Nomenclador Líneas (Nomenclador.v2)", type=['xlsx'])
+    file_nom_univ = col2.file_uploader("2. Nomenclador Único 07 (Interior/AMBA)", type=['xlsx'])
     file_nom_ramal = col1.file_uploader("3. Nomenclador Ramal - TS", type=['xlsx'])
     file_pme = col2.file_uploader("4. Parque Móvil - Energías", type=['xlsx'])
 
@@ -268,11 +264,16 @@ def modulo_dmk():
             st.error("⚠️ Faltan cargar archivos. Asegurate de subir los 4 requeridos.")
             return
             
-        with st.spinner("Procesando pipeline de datos DMK (Lectura por bloques RAM-Safe)..."):
+        with st.spinner("Procesando pipeline de datos DMK (Cargando Nomenclador Federal)..."):
             try:
-                nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name='01. NOMENCLADOR')
+                # 1. LECTURA DINÁMICA DEL NOMENCLADOR 07
+                xl_nomenclador = pd.ExcelFile(file_nom_univ)
+                hoja_lineas = 'Nomenclador_Interior' if 'Nomenclador_Interior' in xl_nomenclador.sheet_names else 0
+                nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name=hoja_lineas)
                 nom_lineas_raw.columns = nom_lineas_raw.columns.str.strip()
-                nom_ramal_raw = pd.read_excel(file_nom_ramal, sheet_name='NOMENCLADOR TS')
+                
+                nom_ramal_raw = pd.read_excel(file_nom_ramal, sheet_name='NOMENCLADOR TS' if 'NOMENCLADOR TS' in pd.ExcelFile(file_nom_ramal).sheet_names else 0)
+                
                 pme_raw = pd.read_excel(file_pme, sheet_name='Nomenclador_PM_E')
                 pme_raw.columns = pme_raw.columns.str.strip().str.upper().str.replace('Í', 'I').str.replace('É', 'E')
                 tipo_energia_raw = pd.read_excel(file_pme, sheet_name='Tipo_Energia')
@@ -284,19 +285,25 @@ def modulo_dmk():
                 c_silas = buscar_col(nom_lineas_raw, 'SILAS - AMBA', 'LINEA_SILAS_DNGFF', 'LINEA SILAS DNGFF', 'SILAS')
                 c_empresa = buscar_col(nom_lineas_raw, 'ID_EMPRESA', 'IDEMPRESA', 'EMPRESA')
                 c_rs = buscar_col(nom_lineas_raw, 'Razon social', 'RAZON_SOCIAL', 'SOCIAL')
+                
+                # MAPEO FEDERAL EXACTO (Archivo 07)
                 c_juris = buscar_col(nom_lineas_raw, 'Jurisdiccion', 'JURIS')
                 c_prov = buscar_col(nom_lineas_raw, 'Provincia', 'PROV')
                 c_mun = buscar_col(nom_lineas_raw, 'Localidad', 'MUNICIPIO')
+                c_dep = buscar_col(nom_lineas_raw, 'Departamento', 'DEPTO')
 
                 n_lin['ID_LINEA'] = pd.to_numeric(nom_lineas_raw[c_id_linea], errors='coerce').astype('Int64') if c_id_linea else pd.Series(dtype='Int64')
                 n_lin['GRUPO_TARIFARIO'] = nom_lineas_raw[c_gt].astype('string').str.strip() if c_gt else pd.Series(dtype='string')
                 n_lin['LINEA_SILAS_DNGFF'] = nom_lineas_raw[c_silas].astype('string').str.strip() if c_silas else pd.Series(dtype='string')
                 n_lin['ID_EMPRESA_NOM'] = pd.to_numeric(nom_lineas_raw[c_empresa], errors='coerce').astype('Int64') if c_empresa else pd.Series(dtype='Int64')
                 n_lin['RAZON_SOCIAL'] = nom_lineas_raw[c_rs].astype('string').str.strip() if c_rs else pd.Series(dtype='string')
+                
+                # Ahora sí levanta las geográficas sin forzar el descarte del Departamento
                 n_lin['JURISDICCION'] = nom_lineas_raw[c_juris].astype('string').str.strip() if c_juris else pd.Series(dtype='string')
                 n_lin['PROVINCIA'] = nom_lineas_raw[c_prov].astype('string').str.strip() if c_prov else pd.Series(dtype='string')
                 n_lin['MUNICIPIO'] = nom_lineas_raw[c_mun].astype('string').str.strip() if c_mun else pd.Series(dtype='string')
-                n_lin['DEPARTAMENTO'] = SIN_DATO
+                n_lin['DEPARTAMENTO'] = nom_lineas_raw[c_dep].astype('string').str.strip() if c_dep else pd.Series(dtype='string')
+                
                 nom_lineas = n_lin.dropna(subset=['ID_LINEA']).drop_duplicates(subset=['ID_LINEA'])
 
                 c_ramal = buscar_col(nom_ramal_raw, 'IdRamalNS', 'RAMAL')
@@ -373,9 +380,11 @@ def modulo_dmk():
                     chunk = chunk.merge(nom_ramal, on='RAMAL', how='left', validate='m:1')
                     chunk = chunk.merge(pme, on='DOMINIO', how='left', validate='m:1')
 
+                    # La magia: Al usar el archivo 07, todas las ID_LINEAS del Interior ahora cruzan
                     chunk['ES_BENEFICIARIA'] = np.where(chunk['GRUPO_TARIFARIO'].notna(), 'SI', 'NO')
                     gt_upper = chunk['GRUPO_TARIFARIO'].astype('string').str.strip().str.upper()
                     chunk['AMBA'] = np.select([gt_upper.isin(GRUPOS_AMBA).fillna(False).to_numpy(), gt_upper.eq(GRUPO_INP).fillna(False).to_numpy()], ['SI', 'AMBA - INP'], default='NO')
+                    
                     chunk['EN_PARQUE_MOVIL'] = np.where(chunk['ENERGIA_PM'].notna(), 'SI', 'NO')
                     chunk['TIPO_ENERGIA'] = chunk['ENERGIA_PM'].fillna(ENERGIA_DEFECTO).astype('Int64')
                     chunk['ENERGIA_DESC'] = chunk['TIPO_ENERGIA'].map(MAPA_ENERGIA).astype('string')
@@ -398,7 +407,6 @@ def modulo_dmk():
 
                     u = truncar_serie(chunk['CANTIDAD_USOS'])
                     
-                    # CÁLCULOS MATEMÁTICOS TRUNCADOS (GARANTIZA NÚMEROS FLOTANTES)
                     chunk['TARIFA'] = truncar_serie(chunk['TARIFA'])
                     chunk['DEBITADO'] = truncar_serie(chunk['DEBITADO'])
                     chunk['DESCUENTO X INTEGRACION'] = truncar_serie(chunk['DESCUENTO X INTEGRACION'])
@@ -498,7 +506,6 @@ def modulo_dmk():
                 base_621 = df_final[df_final['CONTRATO'].isin(CONTRATOS_ATS)]
                 resumen_621 = base_621.groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'RAMAL'], dropna=False).agg(**{'MONTO TOTAL COBRADO': ('RECAUDACION', 'sum')}, **{'CANTIDAD DE TRANSACCIONES': (c_us_df, 'sum')}, **{'DESCUENTO TOTAL ITG': ('COMP. ITG', 'sum')}, **{'DESCUENTO TOTAL ATS': ('COMP. ATS', 'sum')}, AMBA=('AMBA', 'first')).reset_index().rename(columns={'ID_LINEA': 'LINEA', 'RAZON_SOCIAL': 'RAZON SOCIAL'})
 
-                # ALMACENAR EN ESTADO DE SESIÓN (La bóveda)
                 buf_resumenes = io.BytesIO()
                 with pd.ExcelWriter(buf_resumenes, engine='openpyxl') as writer:
                     for nombre, tabla in HOJAS.items():
@@ -513,21 +520,18 @@ def modulo_dmk():
                 st.session_state.dmk_621 = buf_621.getvalue()
 
                 buf_csv = io.BytesIO()
-                # decimal=',' soluciona la apertura en Excel de Argentina para el CSV
                 df_final.to_csv(buf_csv, index=False, sep=';', encoding='utf-8-sig', decimal=',')
                 st.session_state.dmk_csv = buf_csv.getvalue()
 
                 del df_final, df_no_benef, base_621, df_tarifario_dominio
                 gc.collect()
 
-                # Forzamos recarga para que dibuje los botones estáticos
                 st.rerun()
 
             except Exception as e: st.error(f"Error procesando DMK: {e}")
 
-    # BLOQUE DE DESCARGA PROTEGIDO DE REINICIOS
     if st.session_state.dmk_resumenes is not None:
-        st.success("✅ ¡Liquidación procesada y blindada en la memoria! Ya no se te van a borrar las descargas.")
+        st.success("✅ ¡Liquidación procesada! Padrón federal restaurado y descarga blindada en memoria.")
         st.markdown("### Descargas Disponibles")
         d1, d2, d3 = st.columns(3)
         d1.download_button("📥 Descargar Resúmenes (.xlsx)", data=st.session_state.dmk_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -535,7 +539,7 @@ def modulo_dmk():
         d3.download_button("📥 Descargar Base Detalle (.csv)", data=st.session_state.dmk_csv, file_name="DGGI_Base_Detalle.csv", mime="text/csv", use_container_width=True)
 
 # ==============================================================================
-# MÓDULO 3: CÁLCULO TTR (TRUNCAMIENTO PURO)
+# MÓDULO 3: CÁLCULO TTR
 # ==============================================================================
 def modulo_calculo_ttr():
     st.title("🧮 TTR_ARIA - Módulo 3: Cálculo y Valorización TTR")
@@ -770,7 +774,6 @@ def modulo_calculo_ttr():
                 buf_salida = io.BytesIO()
                 with pd.ExcelWriter(buf_salida, engine='openpyxl') as writer:
                     _df2_.to_excel(writer, index=False, sheet_name='Valorizacion_TTR')
-                    # Aseguramos el formato numérico contable en la salida TTR también
                     formatear_excel(writer.sheets['Valorizacion_TTR'], _df2_, ['TARIFA', 'DEBITADO', 'USOS', 'RECAUDACION', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_ATRIBUTOS', 'DESCUENTO_TOTAL', 'Tarifa TRSUBE', 'Tarifa TRSUBE2', 'Tarifa TRSUBE_FINAL', 'Recaudacion_TRSUBE'])
                 buf_salida.seek(0)
                 
@@ -782,7 +785,6 @@ def modulo_calculo_ttr():
 
             except Exception as e: st.error(f"Error procesando TTR: {e}")
 
-    # BOTÓN EN CACHÉ PARA TTR
     if st.session_state.ttr_salida is not None:
         st.success("✅ ¡Valorización TTR calculada y guardada en memoria! (Truncado a 2 decimales y formato Excel solucionado)")
         st.download_button(label="📥 Descargar Base Macheo TTR (.xlsx)", data=st.session_state.ttr_salida, file_name="macheo_ttr_ARIA.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -794,7 +796,7 @@ st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", widt
 st.sidebar.title("Menú TTR_ARIA")
 modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
 st.sidebar.markdown("---")
-st.sidebar.info("Proyecto ARIA v3.2 (Chunks, Truncamiento Estricto, Memoria Caché y Excel Fix)\n\nMotor unificado de cálculos TTR.")
+st.sidebar.info("Proyecto ARIA v3.3 (Federal Fix, Chunks, Truncamiento Estricto, Memoria Caché)\n\nMotor unificado de cálculos TTR.")
 
 if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
 elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
