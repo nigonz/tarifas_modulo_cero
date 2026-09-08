@@ -574,8 +574,10 @@ def modulo_dmk():
 
                 st.session_state.dmk_csv = buf_csv.getvalue().encode('utf-8-sig').replace(b'.', b',')
 
-                del buf_csv, master_comp, master_energ, master_contrato, master_mp, master_tarifario, master_td, master_621, chunks_unicos, chunks_no_benef
+                del master_comp, master_energ, master_contrato, master_mp, master_tarifario, master_td, master_621, chunks_unicos, chunks_no_benef
                 gc.collect()
+
+                st.rerun()
 
                 st.rerun()
 
