@@ -220,13 +220,13 @@ def modulo_tarifas():
 
         if st.session_state.matriz_procesada is not None:
             st.success(f"✅ ¡Matriz de {st.session_state.matriz_nombre} generada con éxito (Truncada a 2 decimales exactos)!")
-            st.download_button(label=f"📥 Descargar Matriz Definitiva {st.session_state.matriz_nombre} (.xlsx)", 
+            st.download_button(label=f"📥 Descargar Matriz Definitiva {mes_act} (.xlsx)", 
                                data=st.session_state.matriz_procesada, 
                                file_name=f"Matriz_TTR_ARIA_{st.session_state.matriz_nombre}.xlsx", 
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ==============================================================================
-# MÓDULO 1: DMK (ITG y ATS) - ESCRITURA EN STREAMING CON ROBUSTEZ MATEMÁTICA
+# MÓDULO 1: DMK (ITG y ATS) - ACUMULADOR MAESTRO EN TIEMPO REAL (RAM FLAT)
 # ==============================================================================
 def modulo_dmk():
     st.title("🧮 TTR_ARIA - Módulo 1: Liquidación DMK (ITG/ATS)")
@@ -262,7 +262,7 @@ def modulo_dmk():
             st.error("⚠️ Faltan cargar archivos. Asegurate de subir los 4 requeridos.")
             return
             
-        with st.spinner("Procesando pipeline de datos DMK en modo Streaming (Cero Colapsos)..."):
+        with st.spinner("Procesando pipeline de datos DMK con Acumulador Maestro (Cero RAM Bloat)..."):
             try:
                 xl_nomenclador = pd.ExcelFile(file_nom_univ)
                 hoja_lineas = 'Nomenclador_Interior' if 'Nomenclador_Interior' in xl_nomenclador.sheet_names else 0
@@ -354,15 +354,17 @@ def modulo_dmk():
 
                 buf_csv = io.StringIO()
                 
-                agrupados_compensacion = []
-                agrupados_unicos = []
-                agrupados_energia = []
-                agrupados_contrato = []
-                agrupados_medio_pago = []
-                agrupados_tarifario = []
-                agrupados_tarifario_dominio = []
-                agrupados_621 = []
-                agrupados_no_benef = []
+                # ACUMULADORES MAESTROS (Se actualizan en tiempo real bloque a bloque)
+                master_comp = None
+                master_energ = None
+                master_contrato = None
+                master_mp = None
+                master_tarifario = None
+                master_td = None
+                master_621 = None
+                
+                chunks_unicos = []
+                chunks_no_benef = []
 
                 if file_dggi.name.endswith('.csv'):
                     lector = pd.read_csv(file_dggi, encoding='ISO-8859-1', delimiter=';', usecols=columnas_existentes, chunksize=50000, low_memory=True)
@@ -374,7 +376,7 @@ def modulo_dmk():
                 es_primer_chunk = True
 
                 for i, chunk in enumerate(lector):
-                    texto_estado.text(f"Masticando bloque {i+1} y escribiendo CSV en streaming...")
+                    texto_estado.text(f"Procesando bloque {i+1} en streaming y acumulando totales...")
                     chunk = chunk.rename(columns=rename_dict)
                     if 'DESCUENTO_ATRIBUTOS' not in chunk.columns: chunk['DESCUENTO_ATRIBUTOS'] = 0.0
 
@@ -429,7 +431,7 @@ def modulo_dmk():
                     chunk['RECAUDACION_CALC'] = truncar_serie(chunk['DEBITADO'] * u)
                     chunk['DESC_TOTAL_CALC'] = truncar_serie((chunk['TARIFA'] - chunk['DEBITADO']) * u)
                     chunk['COMP_ITG_CALC'] = truncar_serie(chunk['DESCUENTO X INTEGRACION'] * u)
-                    chunk['COMP_ATS_CALC'] = np.where(es_ats, truncar_serie((chunk['TARIFA'] - chunk['DEBITADO'] - chunk['DESCUENTO X INTEGRACION']) * u), 0.0)
+                    chunk['COMP_ATS_CALC'] = np.where(es_ats, truncar_serie((chunk['TARIFA'] - chunk['DEBITADO'] - chunk['DESCUENTO X INTEGRACION'] ) * u), 0.0)
                     
                     chunk['DIF_RECAUDACION'] = truncar_serie(chunk['RECAUDACION_CALC'] - chunk['RECAUDACION'])
                     chunk['DIF_DESC_TOTAL'] = truncar_serie(chunk['DESC_TOTAL_CALC'] - chunk['DESCUENTO_TOTAL'])
@@ -441,50 +443,88 @@ def modulo_dmk():
                     chunk_benef = chunk[chunk['ES_BENEFICIARIA'] == 'SI'].copy()
                     chunk_no_benef = chunk[chunk['ES_BENEFICIARIA'] == 'NO'].copy()
                     
+                    # Escribir CSV al vuelo
                     chunk_benef.to_csv(buf_csv, index=False, sep=';', header=es_primer_chunk)
                     
                     c_us_df = 'CANTIDAD_USOS'; c_dt_df = 'DESCUENTO_TOTAL'; c_da_df = 'DESCUENTO_ATRIBUTOS'; c_di_df = 'TOTAL DESC POR INTEGRACION'
                     AGG_ESTANDAR = dict(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG=('COMP. ITG', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS=('COMP. ATS', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'))
                     
-                    agrupados_compensacion.append(resumir(chunk_benef, ['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR))
-                    agrupados_unicos.append(chunk_benef.groupby(['PROVINCIA', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).agg(LINEAS_SILAS_UNICAS=('LINEA_SILAS_DNGFF', lambda x: set(x.dropna())), ID_LINEAS_UNICAS=('ID_LINEA', lambda x: set(x.dropna())), RAMALES_UNICOS=('RAMAL', lambda x: set(x.dropna())), EMPRESAS_UNICAS=('ID_EMPRESA', lambda x: set(x.dropna())), INTERNOS_UNICOS=('INTERNO', lambda x: set(x.dropna())), DOMINIOS_UNICOS=('DOMINIO', lambda x: set(x.dropna()))).reset_index())
-                    agrupados_energia.append(resumir(chunk_benef[chunk_benef['EN_PARQUE_MOVIL'] == 'SI'], ['ID_LINEA', 'LINEA_SILAS_DNGFF', 'PROVINCIA', 'AMBA', 'ENERGIA_DESC'], AGG_ESTANDAR))
-                    agrupados_contrato.append(chunk_benef.groupby(['CONTRATO', 'AMBA'], dropna=False).agg(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=(c_da_df, 'sum')).reset_index())
-                    agrupados_medio_pago.append(resumir(chunk_benef, [buscar_col(chunk_benef, 'MEDIOS_DE_PAGO'), 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR))
-                    
-                    CLAVES_TARIFARIO = ['PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA', 'LINEA_SILAS_DNGFF', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'TARIFA', 'DEBITADO']
-                    agrupados_tarifario.append(chunk_benef.groupby(CLAVES_TARIFARIO, dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=(c_da_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum')).reset_index())
+                    # 1. Acumulador Compensación
+                    c_comp = resumir(chunk_benef, ['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR)
+                    master_comp = c_comp if master_comp is None else pd.concat([master_comp, c_comp], ignore_index=True).groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).sum().reset_index()
 
+                    # 2. Unicos
+                    u_chunk = chunk_benef.groupby(['PROVINCIA', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).agg(
+                        LINEAS_SILAS_UNICAS=('LINEA_SILAS_DNGFF', lambda x: set(x.dropna())),
+                        ID_LINEAS_UNICAS=('ID_LINEA', lambda x: set(x.dropna())),
+                        RAMALES_UNICOS=('RAMAL', lambda x: set(x.dropna())),
+                        EMPRESAS_UNICAS=('ID_EMPRESA', lambda x: set(x.dropna())),
+                        INTERNOS_UNICOS=('INTERNO', lambda x: set(x.dropna())),
+                        DOMINIOS_UNICOS=('DOMINIO', lambda x: set(x.dropna()))
+                    ).reset_index()
+                    chunks_unicos.append(u_chunk)
+
+                    # 3. Energía
+                    e_chunk = resumir(chunk_benef[chunk_benef['EN_PARQUE_MOVIL'] == 'SI'], ['ID_LINEA', 'LINEA_SILAS_DNGFF', 'PROVINCIA', 'AMBA', 'ENERGIA_DESC'], AGG_ESTANDAR)
+                    master_energ = e_chunk if master_energ is None else pd.concat([master_energ, e_chunk], ignore_index=True).groupby(['ID_LINEA', 'LINEA_SILAS_DNGFF', 'PROVINCIA', 'AMBA', 'ENERGIA_DESC'], dropna=False).sum().reset_index()
+
+                    # 4. Contrato
+                    ct_chunk = chunk_benef.groupby(['CONTRATO', 'AMBA'], dropna=False).agg(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=('DESCUENTO_ATRIBUTOS', 'sum')).reset_index()
+                    master_contrato = ct_chunk if master_contrato is None else pd.concat([master_contrato, ct_chunk], ignore_index=True).groupby(['CONTRATO', 'AMBA'], dropna=False).sum().reset_index()
+
+                    # 5. Medio Pago
+                    mp_col = buscar_col(chunk_benef, 'MEDIOS_DE_PAGO')
+                    mp_chunk = resumir(chunk_benef, [mp_col, 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR)
+                    master_mp = mp_chunk if master_mp is None else pd.concat([master_mp, mp_chunk], ignore_index=True).groupby([mp_col, 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).sum().reset_index()
+
+                    # 6. Tarifario
+                    CLAVES_TARIFARIO = ['PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA', 'LINEA_SILAS_DNGFF', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'TARIFA', 'DEBITADO']
+                    t_chunk = chunk_benef.groupby(CLAVES_TARIFARIO, dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=('DESCUENTO_ATRIBUTOS', 'sum'), DESCUENTO_TOTAL=('DESCUENTO_TOTAL', 'sum')).reset_index()
+                    master_tarifario = t_chunk if master_tarifario is None else pd.concat([master_tarifario, t_chunk], ignore_index=True).groupby(CLAVES_TARIFARIO, dropna=False).sum().reset_index()
+
+                    # 7. Tarifario Dominio
                     chunk_td = chunk_benef.copy()
                     es_gasoil = (chunk_td['TIPO_ENERGIA'] == 3).fillna(False).to_numpy()
                     chunk_td['DOMINIO'] = np.where(es_gasoil, 'NO', chunk_td['DOMINIO'])
                     chunk_td['ENERGIA'] = chunk_td['TIPO_ENERGIA']
-                    agrupados_tarifario_dominio.append(chunk_td.groupby(CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'], dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=(c_da_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum')).reset_index())
-                    
-                    agrupados_621.append(chunk_benef[chunk_benef['CONTRATO'].isin(CONTRATOS_ATS)].groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'RAMAL'], dropna=False).agg(**{'MONTO TOTAL COBRADO': ('RECAUDACION', 'sum')}, **{'CANTIDAD DE TRANSACCIONES': (c_us_df, 'sum')}, **{'DESCUENTO TOTAL ITG': ('COMP. ITG', 'sum')}, **{'DESCUENTO TOTAL ATS': ('COMP. ATS', 'sum')}, AMBA=('AMBA', 'first')).reset_index().rename(columns={'ID_LINEA': 'LINEA', 'RAZON_SOCIAL': 'RAZON SOCIAL'}))
-                    
+                    td_chunk = chunk_td.groupby(CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'], dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=('DESCUENTO_ATRIBUTOS', 'sum'), DESCUENTO_TOTAL=('DESCUENTO_TOTAL', 'sum')).reset_index()
+                    master_td = td_chunk if master_td is None else pd.concat([master_td, td_chunk], ignore_index=True).groupby(CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'], dropna=False).sum().reset_index()
+
+                    # 8. ATS 621
+                    b621_chunk = chunk_benef[chunk_benef['CONTRATO'].isin(CONTRATOS_ATS)].groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'RAMAL'], dropna=False).agg(**{'MONTO TOTAL COBRADO': ('RECAUDACION', 'sum')}, **{'CANTIDAD DE TRANSACCIONES': (c_us_df, 'sum')}, **{'DESCUENTO TOTAL ITG': ('COMP. ITG', 'sum')}, **{'DESCUENTO TOTAL ATS': ('COMP. ATS', 'sum')}, AMBA=('AMBA', 'first')).reset_index().rename(columns={'ID_LINEA': 'LINEA', 'RAZON_SOCIAL': 'RAZON SOCIAL'})
+                    master_621 = b621_chunk if master_621 is None else pd.concat([master_621, b621_chunk], ignore_index=True).groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON SOCIAL', 'LINEA', 'RAMAL', 'AMBA'], dropna=False).sum().reset_index()
+
+                    # 9. No Beneficiarias
                     if not chunk_no_benef.empty:
-                        agrupados_no_benef.append(chunk_no_benef.groupby(['ID_LINEA', 'ID_EMPRESA'], dropna=False).agg(RAMALES=('RAMAL', lambda x: set(x.dropna())), CONTRATOS=('CONTRATO', lambda x: set(x.dropna())), RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=(c_da_df, 'sum')).reset_index())
+                        nb_chunk = chunk_no_benef.groupby(['ID_LINEA', 'ID_EMPRESA'], dropna=False).agg(
+                            RAMALES=('RAMAL', lambda x: set(x.dropna())),
+                            CONTRATOS=('CONTRATO', lambda x: set(x.dropna())),
+                            RECAUDACION=('RECAUDACION', 'sum'), USOS=('CANTIDAD_USOS', 'sum'), 
+                            DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), 
+                            COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), 
+                            COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), 
+                            ATRIBUTO_EN_BASE=('DESCUENTO_ATRIBUTOS', 'sum')
+                        ).reset_index()
+                        chunks_no_benef.append(nb_chunk)
 
                     del chunk, chunk_benef, chunk_no_benef, chunk_td
                     gc.collect()
                     es_primer_chunk = False
 
                 progreso.progress(100)
-                texto_estado.text("Consolidando resúmenes matemáticos finales...")
+                texto_estado.text("Generando archivos Excel y CSV finales...")
 
-                # 4. CONSOLIDACIÓN DE ESQUELETOS (FILTRO MATEMÁTICO DE SEGURIDAD)
-                def consolidar_suma(lista_dfs, cols_group):
-                    if not lista_dfs: return pd.DataFrame()
-                    df_concat = pd.concat(lista_dfs, ignore_index=True)
-                    cols_sumar = [c for c in df_concat.columns if c not in cols_group]
-                    return df_concat.groupby(cols_group, dropna=False)[cols_sumar].sum().reset_index()
-                
-                # Exigencia estricta en tiempo de consolidación: Todo elemento es evaluado antes de unirse
-                resumen_compensacion = consolidar_suma(agrupados_compensacion, ['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'])
-                resumen_unicos_concat = pd.concat(agrupados_unicos, ignore_index=True) if agrupados_unicos else pd.DataFrame()
-                if not resumen_unicos_concat.empty:
-                    resumen_unicos = resumen_unicos_concat.groupby(['PROVINCIA', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).agg(
+                resumen_compensacion = master_comp if master_comp is not None else pd.DataFrame()
+                resumen_energia = master_energ if master_energ is not None else pd.DataFrame()
+                resumen_contrato = master_contrato if master_contrato is not None else pd.DataFrame()
+                resumen_medio_pago = master_mp if master_mp is not None else pd.DataFrame()
+                resumen_tarifario = master_tarifario if master_tarifario is not None else pd.DataFrame()
+                resumen_tarifario_dominio = master_td if master_td is not None else pd.DataFrame()
+                resumen_621 = master_621 if master_621 is not None else pd.DataFrame()
+
+                if chunks_unicos:
+                    df_u_all = pd.concat(chunks_unicos, ignore_index=True)
+                    resumen_unicos = df_u_all.groupby(['PROVINCIA', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).agg(
                         LINEAS_SILAS_UNICAS=('LINEAS_SILAS_UNICAS', lambda x: len(set().union(*[set(s) for s in x if isinstance(s, (set, list, tuple))]))),
                         ID_LINEAS_UNICAS=('ID_LINEAS_UNICAS', lambda x: len(set().union(*[set(s) for s in x if isinstance(s, (set, list, tuple))]))),
                         RAMALES_UNICOS=('RAMALES_UNICOS', lambda x: len(set().union(*[set(s) for s in x if isinstance(s, (set, list, tuple))]))),
@@ -493,21 +533,17 @@ def modulo_dmk():
                         DOMINIOS_UNICOS=('DOMINIOS_UNICOS', lambda x: len(set().union(*[set(s) for s in x if isinstance(s, (set, list, tuple))])))
                     ).reset_index()
                 else: resumen_unicos = pd.DataFrame()
-                
-                resumen_energia = consolidar_suma(agrupados_energia, ['ID_LINEA', 'LINEA_SILAS_DNGFF', 'PROVINCIA', 'AMBA', 'ENERGIA_DESC'])
-                resumen_contrato = consolidar_suma(agrupados_contrato, ['CONTRATO', 'AMBA'])
-                resumen_medio_pago = consolidar_suma(agrupados_medio_pago, [buscar_col(pd.DataFrame(columns=rename_dict.values()), 'MEDIOS_DE_PAGO'), 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'])
-                resumen_tarifario = consolidar_suma(agrupados_tarifario, CLAVES_TARIFARIO)
-                resumen_tarifario_dominio = consolidar_suma(agrupados_tarifario_dominio, CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'])
-                resumen_621 = consolidar_suma(agrupados_621, ['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON SOCIAL', 'LINEA', 'RAMAL', 'AMBA'])
-                
-                no_benef_concat = pd.concat(agrupados_no_benef, ignore_index=True) if agrupados_no_benef else pd.DataFrame()
-                if not no_benef_concat.empty:
-                    no_benef_detalle = no_benef_concat.groupby(['ID_LINEA', 'ID_EMPRESA'], dropna=False).agg(
+
+                if chunks_no_benef:
+                    df_nb_all = pd.concat(chunks_no_benef, ignore_index=True)
+                    no_benef_detalle = df_nb_all.groupby(['ID_LINEA', 'ID_EMPRESA'], dropna=False).agg(
                         RAMALES=('RAMALES', lambda x: ', '.join(map(str, sorted(set().union(*[set(s) for s in x if isinstance(s, (set, list, tuple))]))))),
                         CONTRATOS=('CONTRATOS', lambda x: ', '.join(map(str, sorted(set().union(*[set(s) for s in x if isinstance(s, (set, list, tuple))]))))),
-                        RECAUDACION=('RECAUDACION', 'sum'), USOS=('USOS', 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL_sIVA', 'sum'), 
-                        COMP_ITG_sIVA=('COMP_ITG_sIVA', 'sum'), COMP_ATS_sIVA=('COMP_ATS_sIVA', 'sum'), ATRIBUTO_EN_BASE=('ATRIBUTO_EN_BASE', 'sum')
+                        RECAUDACION=('RECAUDACION', 'sum'), USOS=('USOS', 'sum'), 
+                        DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL_sIVA', 'sum'), 
+                        COMP_ITG_sIVA=('COMP_ITG_sIVA', 'sum'), 
+                        COMP_ATS_sIVA=('COMP_ATS_sIVA', 'sum'), 
+                        ATRIBUTO_EN_BASE=('ATRIBUTO_EN_BASE', 'sum')
                     ).reset_index().sort_values('USOS', ascending=False)
                 else: no_benef_detalle = pd.DataFrame()
 
@@ -533,7 +569,7 @@ def modulo_dmk():
 
                 st.session_state.dmk_csv = buf_csv.getvalue().encode('utf-8-sig').replace(b'.', b',')
 
-                del buf_csv, agrupados_compensacion, agrupados_unicos, agrupados_energia, agrupados_contrato, agrupados_medio_pago, agrupados_tarifario, agrupados_tarifario_dominio, agrupados_621, agrupados_no_benef
+                del buf_csv, master_comp, master_energ, master_contrato, master_mp, master_tarifario, master_td, master_621, chunks_unicos, chunks_no_benef
                 gc.collect()
 
                 st.rerun()
@@ -541,7 +577,7 @@ def modulo_dmk():
             except Exception as e: st.error(f"Error procesando DMK: {e}")
 
     if st.session_state.dmk_resumenes is not None:
-        st.success("✅ ¡Liquidación procesada por Streaming de alta compatibilidad! Conjuntos matemáticos fusionados.")
+        st.success("✅ ¡Liquidación procesada con éxito absoluto! Memoria plana y resúmenes completos.")
         st.markdown("### Descargas Disponibles")
         d1, d2, d3 = st.columns(3)
         d1.download_button("📥 Descargar Resúmenes (.xlsx)", data=st.session_state.dmk_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -806,7 +842,7 @@ st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", widt
 st.sidebar.title("Menú TTR_ARIA")
 modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
 st.sidebar.markdown("---")
-st.sidebar.info("Proyecto ARIA v3.5 (Streaming Federal con Filtro Matemático de Conjuntos)\n\nMotor unificado de cálculos TTR.")
+st.sidebar.info("Proyecto ARIA v3.6 (Acumulador Maestro Streaming)\n\nMotor unificado de cálculos TTR.")
 
 if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
 elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
