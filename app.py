@@ -447,8 +447,9 @@ def modulo_dmk():
                     chunk_no_benef = chunk[chunk['ES_BENEFICIARIA'] == 'NO'].copy()
                     
                     # Escribir CSV al vuelo
-                   mode = 'w' if es_primer_chunk else 'a'
-                   chunk_benef.to_csv(ruta_temp_csv, index=False, sep=';', header=es_primer_chunk, mode=mode, decimal=',')
+                   # Dentro del bucle for i, chunk in enumerate(lector):
+                    mode = 'w' if es_primer_chunk else 'a'
+                    chunk_benef.to_csv(ruta_temp_csv, index=False, sep=';', header=es_primer_chunk, mode=mode, decimal=',')
                     
                     c_us_df = 'CANTIDAD_USOS'; c_dt_df = 'DESCUENTO_TOTAL'; c_da_df = 'DESCUENTO_ATRIBUTOS'; c_di_df = 'TOTAL DESC POR INTEGRACION'
                     AGG_ESTANDAR = dict(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG=('COMP. ITG', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS=('COMP. ATS', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'))
