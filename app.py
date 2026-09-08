@@ -8,6 +8,7 @@ from decimal import Decimal, ROUND_DOWN
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+import tempfile
 
 st.set_page_config(page_title="TTR_ARIA - Sistema Integral", layout="wide")
 
@@ -352,7 +353,9 @@ def modulo_dmk():
                     'RECAUDACION_CALC', 'DESC_TOTAL_CALC', 'COMP_ITG_CALC', 'COMP_ATS_CALC', 'DIF_RECAUDACION', 'DIF_DESC_TOTAL', 'DIF_ITG', 'DIF_ATS',
                 ]
 
-                buf_csv = io.StringIO()
+                temp_csv = tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8-sig', newline='')
+                ruta_temp_csv = temp_csv.name
+                temp_csv.close()
                 
                 # ACUMULADORES MAESTROS (Se actualizan en tiempo real bloque a bloque)
                 master_comp = None
@@ -444,7 +447,8 @@ def modulo_dmk():
                     chunk_no_benef = chunk[chunk['ES_BENEFICIARIA'] == 'NO'].copy()
                     
                     # Escribir CSV al vuelo
-                    chunk_benef.to_csv(buf_csv, index=False, sep=';', header=es_primer_chunk)
+                   mode = 'w' if es_primer_chunk else 'a'
+                   chunk_benef.to_csv(ruta_temp_csv, index=False, sep=';', header=es_primer_chunk, mode=mode, decimal=',')
                     
                     c_us_df = 'CANTIDAD_USOS'; c_dt_df = 'DESCUENTO_TOTAL'; c_da_df = 'DESCUENTO_ATRIBUTOS'; c_di_df = 'TOTAL DESC POR INTEGRACION'
                     AGG_ESTANDAR = dict(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG=('COMP. ITG', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS=('COMP. ATS', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'))
@@ -825,8 +829,9 @@ def modulo_calculo_ttr():
                 
                 del df_aria, _df2_
                 gc.collect()
-
-                st.session_state.ttr_salida = buf_salida.getvalue()
+                with open(ruta_temp_csv, 'rb') as f:
+                    
+                st.session_state.dmk_csv = f.read()
                 st.rerun()
 
             except Exception as e: st.error(f"Error procesando TTR: {e}")
