@@ -28,21 +28,39 @@ def truncar_a_2(valor):
     except:
         return 0.0
 
+def truncar_serie(serie):
+    """Aplica truncamiento vectorial estricto a una serie de Pandas."""
+    return np.trunc(pd.to_numeric(serie, errors='coerce').fillna(0).astype(float) * 100) / 100.0
+
 def formatear_excel(ws, df, cols_moneda):
     encabezado = Font(name='Arial', size=10, bold=True, color='FFFFFF')
     relleno = PatternFill('solid', start_color='1F4E78')
     cuerpo = Font(name='Arial', size=10)
+    
     for celda in ws[1]:
         celda.font = encabezado
         celda.fill = relleno
         celda.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        
+    indices_moneda = [i for i, col in enumerate(df.columns) if col in cols_moneda]
+    
     for fila in ws.iter_rows(min_row=2):
-        for celda in fila: celda.font = cuerpo
+        for i, celda in enumerate(fila):
+            celda.font = cuerpo
+            if i in indices_moneda:
+                try:
+                    if celda.value is not None:
+                        # Forzamos a que Excel lo interprete como número flotante real
+                        celda.value = float(celda.value)
+                        # Este formato Excel lo localiza al idioma de tu PC (punto para miles, coma decimal)
+                        celda.number_format = '#,##0.00'
+                except:
+                    pass
+                    
     for i, col in enumerate(df.columns, start=1):
         letra = get_column_letter(i)
         ws.column_dimensions[letra].width = min(max(len(str(col)) + 4, 12), 32)
-        if col in cols_moneda:
-            for celda in ws[letra][1:]: celda.number_format = '#,##0.00'
+        
     ws.freeze_panes = 'A2'
     ws.auto_filter.ref = ws.dimensions
 
@@ -60,12 +78,17 @@ def buscar_col(df, *palabras_clave):
     return None
 
 # ==============================================================================
-# MÓDULO 0: TARIFARIO JN (TRUNCAMIENTO PURO Y PROTECCIÓN NONE)
+# MÓDULO 0: TARIFARIO JN
 # ==============================================================================
 def modulo_tarifas():
     st.title("🚜 TTR_ARIA - Módulo 0: Tarifario JN")
     st.markdown("Generador de cuadros tarifarios con indexación automática y arquitectura de espejos.")
     col_izq, col_der = st.columns([1, 3])
+    
+    if "matriz_procesada" not in st.session_state:
+        st.session_state.matriz_procesada = None
+        st.session_state.matriz_nombre = ""
+
     with col_izq:
         archivo_historico = st.file_uploader("Subir Matriz Histórica (.xlsx)", type=['xlsx'], key='mod0_hist')
         mes_act = st.text_input("Nombre del Mes Nuevo", "Septiembre")
@@ -194,16 +217,31 @@ def modulo_tarifas():
                             del df_hist, df_export
                             gc.collect()
 
-                            st.success(f"✅ ¡Matriz de {mes_act} generada con éxito (Truncada a 2 decimales exactos)!")
-                            st.download_button(label=f"📥 Descargar Matriz Definitiva {mes_act} (.xlsx)", data=final_buffer.getvalue(), file_name=f"Matriz_TTR_ARIA_{mes_act}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                            st.session_state.matriz_procesada = final_buffer.getvalue()
+                            st.session_state.matriz_nombre = mes_act
+                            st.rerun()
                         except Exception as e: st.error(f"Error procesando la matriz: {e}")
 
+        # BOTÓN EN CACHÉ (Evita recargas vacías)
+        if st.session_state.matriz_procesada is not None:
+            st.success(f"✅ ¡Matriz de {st.session_state.matriz_nombre} generada con éxito (Truncada a 2 decimales exactos)!")
+            st.download_button(label=f"📥 Descargar Matriz Definitiva {st.session_state.matriz_nombre} (.xlsx)", 
+                               data=st.session_state.matriz_procesada, 
+                               file_name=f"Matriz_TTR_ARIA_{st.session_state.matriz_nombre}.xlsx", 
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 # ==============================================================================
-# MÓDULO 1: DMK (ITG y ATS) - LECTURA POR CHUNKS (CERO OOM Y NOMBRES DIFUSOS)
+# MÓDULO 1: DMK (ITG y ATS)
 # ==============================================================================
 def modulo_dmk():
     st.title("🧮 TTR_ARIA - Módulo 1: Liquidación DMK (ITG/ATS)")
     st.markdown("Pipeline integral de enriquecimiento, control y generación de reportes de compensaciones.")
+
+    # INICIALIZAR ESTADO PARA EVITAR REINICIOS
+    if "dmk_resumenes" not in st.session_state:
+        st.session_state.dmk_resumenes = None
+        st.session_state.dmk_621 = None
+        st.session_state.dmk_csv = None
 
     with st.expander("⚙️ Parámetros de Negocio", expanded=False):
         col1, col2, col3 = st.columns(3)
@@ -232,7 +270,6 @@ def modulo_dmk():
             
         with st.spinner("Procesando pipeline de datos DMK (Lectura por bloques RAM-Safe)..."):
             try:
-                # 1. Cargar Nomencladores
                 nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name='01. NOMENCLADOR')
                 nom_lineas_raw.columns = nom_lineas_raw.columns.str.strip()
                 nom_ramal_raw = pd.read_excel(file_nom_ramal, sheet_name='NOMENCLADOR TS')
@@ -285,7 +322,6 @@ def modulo_dmk():
                 del nom_lineas_raw, nom_ramal_raw, pme_raw, tipo_energia_raw, n_lin, n_ram, p
                 gc.collect()
 
-                # 2. DETECCIÓN EXACTA DE COLUMNAS (NO STRIP PREVIO)
                 file_dggi.seek(0)
                 df_head = pd.read_csv(file_dggi, encoding='ISO-8859-1', delimiter=';', nrows=0) if file_dggi.name.endswith('.csv') else pd.read_excel(file_dggi, nrows=0)
 
@@ -301,7 +337,6 @@ def modulo_dmk():
                 columnas_existentes = []
                 rename_dict = {}
                 
-                # Buscamos la columna cruda exacta comparando su versión "limpia"
                 for col_raw in df_head.columns:
                     col_clean = str(col_raw).strip().upper()
                     for canonico, busquedas in mapa_columnas.items():
@@ -312,7 +347,6 @@ def modulo_dmk():
 
                 file_dggi.seek(0)
 
-                # 3. LECTURA POR CHUNKS (Cero colapsos de RAM)
                 df_final_chunks = []
                 df_no_benef_chunks = []
                 
@@ -332,8 +366,6 @@ def modulo_dmk():
 
                     for c in ['DOMINIO', 'MK', 'VIAJE INTEGRADO', 'MEDIOS_DE_PAGO']:
                         if c in chunk.columns: chunk[c] = chunk[c].astype('string').str.strip().str.upper()
-                    for c in ['TARIFA', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'CANTIDAD_USOS', 'RECAUDACION', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_TOTAL', 'DESCUENTO_ATRIBUTOS']:
-                        if c in chunk.columns: chunk[c] = pd.to_numeric(chunk[c], errors='coerce').fillna(0).astype('float32')
                     for c in ['ID_EMPRESA', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'INTERNO']:
                         if c in chunk.columns: chunk[c] = pd.to_numeric(chunk[c], errors='coerce').astype('Int32')
 
@@ -358,30 +390,39 @@ def modulo_dmk():
                     
                     es_ats = chunk['CONTRATO'].isin(CONTRATOS_ATS).to_numpy()
                     es_est = chunk['CONTRATO'].isin(CONTRATOS_ESTUDIANTILES).to_numpy()
-                    tiene_desc = (chunk['DESCUENTO_ATRIBUTOS'] > 0).to_numpy()
+                    tiene_desc = (pd.to_numeric(chunk['DESCUENTO_ATRIBUTOS'], errors='coerce').fillna(0) > 0).to_numpy()
                     chunk['ES_ATS'] = np.where(es_ats, 'SI', 'NO')
                     chunk['ES_ESTUDIANTIL'] = np.where(es_est, 'SI', 'NO')
                     chunk['ES_OTRO_BENEFICIO'] = np.where(tiene_desc & ~es_ats & ~es_est, 'SI', 'NO')
                     chunk['TIPO_BENEFICIO'] = np.select([es_ats, es_est, tiene_desc & ~es_ats & ~es_est], ['ATS', 'ESTUDIANTIL', 'OTRO BENEFICIO'], default='SIN BENEFICIO')
 
-                    u = chunk['CANTIDAD_USOS']
+                    u = truncar_serie(chunk['CANTIDAD_USOS'])
                     
-                    # CÁLCULOS ESTRICTAMENTE TRUNCADOS (NADA DE ROUND)
+                    # CÁLCULOS MATEMÁTICOS TRUNCADOS (GARANTIZA NÚMEROS FLOTANTES)
+                    chunk['TARIFA'] = truncar_serie(chunk['TARIFA'])
+                    chunk['DEBITADO'] = truncar_serie(chunk['DEBITADO'])
+                    chunk['DESCUENTO X INTEGRACION'] = truncar_serie(chunk['DESCUENTO X INTEGRACION'])
+                    chunk['RECAUDACION'] = truncar_serie(chunk['RECAUDACION'])
+                    chunk['TOTAL DESC POR INTEGRACION'] = truncar_serie(chunk['TOTAL DESC POR INTEGRACION'])
+                    chunk['DESCUENTO_TOTAL'] = truncar_serie(chunk['DESCUENTO_TOTAL'])
+                    chunk['DESCUENTO_ATRIBUTOS'] = truncar_serie(chunk['DESCUENTO_ATRIBUTOS'])
+
                     chunk['COMP. ITG'] = chunk['TOTAL DESC POR INTEGRACION']
-                    chunk['COMP. ITG s/IVA'] = np.trunc((chunk['COMP. ITG'] / IVA) * 100) / 100.0
+                    chunk['COMP. ITG s/IVA'] = truncar_serie(chunk['COMP. ITG'] / IVA)
                     chunk['COMP. ATS'] = np.where(es_ats, chunk['DESCUENTO_ATRIBUTOS'], 0.0)
-                    chunk['COMP. ATS s/IVA'] = np.trunc((chunk['COMP. ATS'] / IVA) * 100) / 100.0
-                    chunk['DESCUENTO_TOTAL s/IVA'] = np.trunc((chunk['DESCUENTO_TOTAL'] / IVA) * 100) / 100.0
-                    chunk['COMP. TOTAL s/IVA'] = chunk['COMP. ITG s/IVA'] + chunk['COMP. ATS s/IVA']
+                    chunk['COMP. ATS s/IVA'] = truncar_serie(chunk['COMP. ATS'] / IVA)
+                    chunk['DESCUENTO_TOTAL s/IVA'] = truncar_serie(chunk['DESCUENTO_TOTAL'] / IVA)
+                    chunk['COMP. TOTAL s/IVA'] = truncar_serie(chunk['COMP. ITG s/IVA'] + chunk['COMP. ATS s/IVA'])
                     
-                    chunk['RECAUDACION_CALC'] = np.trunc((chunk['DEBITADO'] * u) * 100) / 100.0
-                    chunk['DESC_TOTAL_CALC'] = np.trunc(((chunk['TARIFA'] - chunk['DEBITADO']) * u) * 100) / 100.0
-                    chunk['COMP_ITG_CALC'] = np.trunc((chunk['DESCUENTO X INTEGRACION'] * u) * 100) / 100.0
-                    chunk['COMP_ATS_CALC'] = np.where(es_ats, np.trunc(((chunk['TARIFA'] - chunk['DEBITADO'] - chunk['DESCUENTO X INTEGRACION']) * u) * 100) / 100.0, 0.0)
-                    chunk['DIF_RECAUDACION'] = np.trunc((chunk['RECAUDACION_CALC'] - chunk['RECAUDACION']) * 100) / 100.0
-                    chunk['DIF_DESC_TOTAL'] = np.trunc((chunk['DESC_TOTAL_CALC'] - chunk['DESCUENTO_TOTAL']) * 100) / 100.0
-                    chunk['DIF_ITG'] = np.trunc((chunk['COMP_ITG_CALC'] - chunk['COMP. ITG']) * 100) / 100.0
-                    chunk['DIF_ATS'] = np.trunc((chunk['COMP_ATS_CALC'] - chunk['COMP. ATS']) * 100) / 100.0
+                    chunk['RECAUDACION_CALC'] = truncar_serie(chunk['DEBITADO'] * u)
+                    chunk['DESC_TOTAL_CALC'] = truncar_serie((chunk['TARIFA'] - chunk['DEBITADO']) * u)
+                    chunk['COMP_ITG_CALC'] = truncar_serie(chunk['DESCUENTO X INTEGRACION'] * u)
+                    chunk['COMP_ATS_CALC'] = np.where(es_ats, truncar_serie((chunk['TARIFA'] - chunk['DEBITADO'] - chunk['DESCUENTO X INTEGRACION']) * u), 0.0)
+                    
+                    chunk['DIF_RECAUDACION'] = truncar_serie(chunk['RECAUDACION_CALC'] - chunk['RECAUDACION'])
+                    chunk['DIF_DESC_TOTAL'] = truncar_serie(chunk['DESC_TOTAL_CALC'] - chunk['DESCUENTO_TOTAL'])
+                    chunk['DIF_ITG'] = truncar_serie(chunk['COMP_ITG_CALC'] - chunk['COMP. ITG'])
+                    chunk['DIF_ATS'] = truncar_serie(chunk['COMP_ATS_CALC'] - chunk['COMP. ATS'])
 
                     df_final_chunks.append(chunk[chunk['ES_BENEFICIARIA'] == 'SI'])
                     df_no_benef_chunks.append(chunk[chunk['ES_BENEFICIARIA'] == 'NO'])
@@ -448,43 +489,50 @@ def modulo_dmk():
                     'Resumen_Tarifario': resumen_tarifario, 'Resumen_Tarifario_Dominio': resumen_tarifario_dominio, 'NoBenef_Detalle': no_benef_detalle,
                 }
 
-                COLS_MONEDA = {
+                COLS_MONEDA = [
                     'TARIFA', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'RECAUDACION', 'RECAUDACION_CALC', 'DESCUENTO_TOTAL', 'DESCUENTO_TOTAL s/IVA', 'DESCUENTO_TOTAL_sIVA', 'DESC_TOTAL_CALC',
                     'TOTAL DESC POR INTEGRACION', 'DESCUENTO_ATRIBUTOS', 'ATRIBUTO_EN_BASE', 'COMP. ITG', 'COMP. ITG s/IVA', 'COMP. ATS', 'COMP. ATS s/IVA', 'COMP. TOTAL s/IVA',
                     'COMP_ITG', 'COMP_ITG_sIVA', 'COMP_ATS', 'COMP_ATS_sIVA', 'COMP_ITG_CALC', 'COMP_ATS_CALC', 'DIF_RECAUDACION', 'DIF_DESC_TOTAL', 'DIF_ITG', 'DIF_ATS', 'MONTO TOTAL COBRADO', 'DESCUENTO TOTAL ITG', 'DESCUENTO TOTAL ATS'
-                }
+                ]
 
                 base_621 = df_final[df_final['CONTRATO'].isin(CONTRATOS_ATS)]
                 resumen_621 = base_621.groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'RAMAL'], dropna=False).agg(**{'MONTO TOTAL COBRADO': ('RECAUDACION', 'sum')}, **{'CANTIDAD DE TRANSACCIONES': (c_us_df, 'sum')}, **{'DESCUENTO TOTAL ITG': ('COMP. ITG', 'sum')}, **{'DESCUENTO TOTAL ATS': ('COMP. ATS', 'sum')}, AMBA=('AMBA', 'first')).reset_index().rename(columns={'ID_LINEA': 'LINEA', 'RAZON_SOCIAL': 'RAZON SOCIAL'})
 
+                # ALMACENAR EN ESTADO DE SESIÓN (La bóveda)
                 buf_resumenes = io.BytesIO()
                 with pd.ExcelWriter(buf_resumenes, engine='openpyxl') as writer:
                     for nombre, tabla in HOJAS.items():
                         tabla.to_excel(writer, index=False, sheet_name=nombre)
                         formatear_excel(writer.sheets[nombre], tabla, COLS_MONEDA)
-                buf_resumenes.seek(0)
+                st.session_state.dmk_resumenes = buf_resumenes.getvalue()
 
                 buf_621 = io.BytesIO()
                 with pd.ExcelWriter(buf_621, engine='openpyxl') as writer:
                     resumen_621.to_excel(writer, index=False, sheet_name='ATS_621')
                     formatear_excel(writer.sheets['ATS_621'], resumen_621, COLS_MONEDA)
-                buf_621.seek(0)
+                st.session_state.dmk_621 = buf_621.getvalue()
 
                 buf_csv = io.BytesIO()
-                df_final.to_csv(buf_csv, index=False, sep=';', encoding='utf-8-sig')
-                buf_csv.seek(0)
+                # decimal=',' soluciona la apertura en Excel de Argentina para el CSV
+                df_final.to_csv(buf_csv, index=False, sep=';', encoding='utf-8-sig', decimal=',')
+                st.session_state.dmk_csv = buf_csv.getvalue()
 
                 del df_final, df_no_benef, base_621, df_tarifario_dominio
                 gc.collect()
 
-                st.success("✅ ¡Liquidación procesada con éxito (Safe-RAM / Extractor Blindado)!")
-                st.markdown("### Descargas Disponibles")
-                d1, d2, d3 = st.columns(3)
-                d1.download_button("📥 Descargar Resúmenes (.xlsx)", data=buf_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                d2.download_button("📥 Descargar Reporte ATS 621 (.xlsx)", data=buf_621, file_name="DGGI_ATS_621.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                d3.download_button("📥 Descargar Base Detalle (.csv)", data=buf_csv, file_name="DGGI_Base_Detalle.csv", mime="text/csv", use_container_width=True)
+                # Forzamos recarga para que dibuje los botones estáticos
+                st.rerun()
 
             except Exception as e: st.error(f"Error procesando DMK: {e}")
+
+    # BLOQUE DE DESCARGA PROTEGIDO DE REINICIOS
+    if st.session_state.dmk_resumenes is not None:
+        st.success("✅ ¡Liquidación procesada y blindada en la memoria! Ya no se te van a borrar las descargas.")
+        st.markdown("### Descargas Disponibles")
+        d1, d2, d3 = st.columns(3)
+        d1.download_button("📥 Descargar Resúmenes (.xlsx)", data=st.session_state.dmk_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        d2.download_button("📥 Descargar Reporte ATS 621 (.xlsx)", data=st.session_state.dmk_621, file_name="DGGI_ATS_621.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        d3.download_button("📥 Descargar Base Detalle (.csv)", data=st.session_state.dmk_csv, file_name="DGGI_Base_Detalle.csv", mime="text/csv", use_container_width=True)
 
 # ==============================================================================
 # MÓDULO 3: CÁLCULO TTR (TRUNCAMIENTO PURO)
@@ -492,6 +540,9 @@ def modulo_dmk():
 def modulo_calculo_ttr():
     st.title("🧮 TTR_ARIA - Módulo 3: Cálculo y Valorización TTR")
     st.markdown("Clasificación tarifaria y cálculo de recaudación teórica (TRSUBE) conectada a la Matriz ARIA.")
+
+    if "ttr_salida" not in st.session_state:
+        st.session_state.ttr_salida = None
 
     st.header("1. Archivos de Entrada")
     col1, col2 = st.columns(2)
@@ -697,13 +748,12 @@ def modulo_calculo_ttr():
 
                 _df2_['Tarifa TRSUBE_FINAL'] = np.where(_df2_['Tarifa TRSUBE2'] == 0, _df2_['Tarifa TRSUBE'], _df2_['Tarifa TRSUBE2'])
                 
-                # TRUNCAMIENTO EXACTO
-                _df2_['Recaudacion_TRSUBE'] = np.trunc((_df2_['Tarifa TRSUBE_FINAL'] * _df2_[c_usos]) * 100) / 100.0
+                _df2_['Recaudacion_TRSUBE'] = truncar_serie(_df2_['Tarifa TRSUBE_FINAL'] * _df2_[c_usos])
 
                 c_ene = buscar_col(_df2_, 'ENERGIA')
                 if c_ene:
                     condiciones = [_df2_[c_ene] == 1, _df2_[c_ene] == 2, _df2_[c_ene] == 3]
-                    _df2_['Recaudacion_TRSUBE'] = np.trunc((_df2_['Recaudacion_TRSUBE'] * np.select(condiciones, [1.3, 1.5, 1.0], default=1)) * 100) / 100.0
+                    _df2_['Recaudacion_TRSUBE'] = truncar_serie(_df2_['Recaudacion_TRSUBE'] * np.select(condiciones, [1.3, 1.5, 1.0], default=1))
 
                 _df2_['SubSeccion'] = None
                 def asignar_subsecciones(df, dict_t, flt_sn):
@@ -718,15 +768,24 @@ def modulo_calculo_ttr():
                 _df2_['SubSeccion'] = _df2_['SubSeccion'].fillna(_df2_['final_seccion'].astype(str))
 
                 buf_salida = io.BytesIO()
-                _df2_.to_excel(buf_salida, index=False, sheet_name='Valorizacion_TTR')
+                with pd.ExcelWriter(buf_salida, engine='openpyxl') as writer:
+                    _df2_.to_excel(writer, index=False, sheet_name='Valorizacion_TTR')
+                    # Aseguramos el formato numérico contable en la salida TTR también
+                    formatear_excel(writer.sheets['Valorizacion_TTR'], _df2_, ['TARIFA', 'DEBITADO', 'USOS', 'RECAUDACION', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_ATRIBUTOS', 'DESCUENTO_TOTAL', 'Tarifa TRSUBE', 'Tarifa TRSUBE2', 'Tarifa TRSUBE_FINAL', 'Recaudacion_TRSUBE'])
                 buf_salida.seek(0)
                 
                 del df_aria, _df2_
                 gc.collect()
 
-                st.success("✅ ¡Valorización TTR calculada con éxito! Matrices y diccionarios cruzados (Truncado a 2 decimales).")
-                st.download_button(label="📥 Descargar Base Macheo TTR (.xlsx)", data=buf_salida, file_name="macheo_ttr_ARIA.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                st.session_state.ttr_salida = buf_salida.getvalue()
+                st.rerun()
+
             except Exception as e: st.error(f"Error procesando TTR: {e}")
+
+    # BOTÓN EN CACHÉ PARA TTR
+    if st.session_state.ttr_salida is not None:
+        st.success("✅ ¡Valorización TTR calculada y guardada en memoria! (Truncado a 2 decimales y formato Excel solucionado)")
+        st.download_button(label="📥 Descargar Base Macheo TTR (.xlsx)", data=st.session_state.ttr_salida, file_name="macheo_ttr_ARIA.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 # ==============================================================================
 # CONTROLADOR LATERAL
@@ -735,7 +794,7 @@ st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", widt
 st.sidebar.title("Menú TTR_ARIA")
 modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
 st.sidebar.markdown("---")
-st.sidebar.info("Proyecto ARIA v3.1 (Chunks, Truncamiento Estricto & Extractor Blindado)\n\nMotor unificado de cálculos TTR.")
+st.sidebar.info("Proyecto ARIA v3.2 (Chunks, Truncamiento Estricto, Memoria Caché y Excel Fix)\n\nMotor unificado de cálculos TTR.")
 
 if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
 elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
