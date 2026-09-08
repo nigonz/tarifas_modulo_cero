@@ -830,9 +830,8 @@ def modulo_calculo_ttr():
                 
                 del df_aria, _df2_
                 gc.collect()
-                with open(ruta_temp_csv, 'rb') as f:
-                    
-                st.session_state.dmk_csv = f.read()
+               with open(ruta_temp_csv, 'rb') as f:
+                    st.session_state.dmk_csv = f.read()
                 st.rerun()
 
             except Exception as e: st.error(f"Error procesando TTR: {e}")
