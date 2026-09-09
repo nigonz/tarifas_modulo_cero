@@ -10,6 +10,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 import tempfile
 
+
+
 st.set_page_config(page_title="TTR_ARIA - Sistema Integral", layout="wide")
 
 # ==============================================================================
@@ -227,7 +229,7 @@ def modulo_tarifas():
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ==============================================================================
-# MÓDULO 1: DMK (ITG y ATS) - ACUMULADOR MAESTRO EN TIEMPO REAL (RAM FLAT)
+# MÓDULO 1: DMK (ITG y ATS) - ACUMULADOR MAESTRO Y STREAMING EN DISCO
 # ==============================================================================
 def modulo_dmk():
     st.title("🧮 TTR_ARIA - Módulo 1: Liquidación DMK (ITG/ATS)")
@@ -265,6 +267,9 @@ def modulo_dmk():
             
         with st.spinner("Procesando pipeline de datos DMK con Acumulador Maestro (Cero RAM Bloat)..."):
             try:
+                import tempfile
+                import os
+
                 xl_nomenclador = pd.ExcelFile(file_nom_univ)
                 hoja_lineas = 'Nomenclador_Interior' if 'Nomenclador_Interior' in xl_nomenclador.sheet_names else 0
                 nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name=hoja_lineas)
@@ -353,11 +358,11 @@ def modulo_dmk():
                     'RECAUDACION_CALC', 'DESC_TOTAL_CALC', 'COMP_ITG_CALC', 'COMP_ATS_CALC', 'DIF_RECAUDACION', 'DIF_DESC_TOTAL', 'DIF_ITG', 'DIF_ATS',
                 ]
 
+                # Archivo temporal en disco para el CSV
                 temp_csv = tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8-sig', newline='')
                 ruta_temp_csv = temp_csv.name
                 temp_csv.close()
                 
-                # ACUMULADORES MAESTROS (Se actualizan en tiempo real bloque a bloque)
                 master_comp = None
                 master_energ = None
                 master_contrato = None
@@ -434,7 +439,7 @@ def modulo_dmk():
                     chunk['RECAUDACION_CALC'] = truncar_serie(chunk['DEBITADO'] * u)
                     chunk['DESC_TOTAL_CALC'] = truncar_serie((chunk['TARIFA'] - chunk['DEBITADO']) * u)
                     chunk['COMP_ITG_CALC'] = truncar_serie(chunk['DESCUENTO X INTEGRACION'] * u)
-                    chunk['COMP_ATS_CALC'] = np.where(es_ats, truncar_serie((chunk['TARIFA'] - chunk['DEBITADO'] - chunk['DESCUENTO X INTEGRACION'] ) * u), 0.0)
+                    chunk['COMP_ATS_CALC'] = np.where(es_ats, truncar_serie((chunk['TARIFA'] - chunk['DEBITADO'] - chunk['DESCUENTO X INTEGRACION']) * u), 0.0)
                     
                     chunk['DIF_RECAUDACION'] = truncar_serie(chunk['RECAUDACION_CALC'] - chunk['RECAUDACION'])
                     chunk['DIF_DESC_TOTAL'] = truncar_serie(chunk['DESC_TOTAL_CALC'] - chunk['DESCUENTO_TOTAL'])
@@ -446,19 +451,16 @@ def modulo_dmk():
                     chunk_benef = chunk[chunk['ES_BENEFICIARIA'] == 'SI'].copy()
                     chunk_no_benef = chunk[chunk['ES_BENEFICIARIA'] == 'NO'].copy()
                     
-                    # Escribir CSV al vuelo
-                   # Dentro del bucle for i, chunk in enumerate(lector):
+                    # Escribir CSV al archivo temporal en disco
                     mode = 'w' if es_primer_chunk else 'a'
                     chunk_benef.to_csv(ruta_temp_csv, index=False, sep=';', header=es_primer_chunk, mode=mode, decimal=',')
                     
                     c_us_df = 'CANTIDAD_USOS'; c_dt_df = 'DESCUENTO_TOTAL'; c_da_df = 'DESCUENTO_ATRIBUTOS'; c_di_df = 'TOTAL DESC POR INTEGRACION'
                     AGG_ESTANDAR = dict(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL=(c_dt_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG=('COMP. ITG', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS=('COMP. ATS', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'))
                     
-                    # 1. Acumulador Compensación
                     c_comp = resumir(chunk_benef, ['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR)
                     master_comp = c_comp if master_comp is None else pd.concat([master_comp, c_comp], ignore_index=True).groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).sum().reset_index()
 
-                    # 2. Unicos
                     u_chunk = chunk_benef.groupby(['PROVINCIA', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).agg(
                         LINEAS_SILAS_UNICAS=('LINEA_SILAS_DNGFF', lambda x: set(x.dropna())),
                         ID_LINEAS_UNICAS=('ID_LINEA', lambda x: set(x.dropna())),
@@ -469,25 +471,20 @@ def modulo_dmk():
                     ).reset_index()
                     chunks_unicos.append(u_chunk)
 
-                    # 3. Energía
                     e_chunk = resumir(chunk_benef[chunk_benef['EN_PARQUE_MOVIL'] == 'SI'], ['ID_LINEA', 'LINEA_SILAS_DNGFF', 'PROVINCIA', 'AMBA', 'ENERGIA_DESC'], AGG_ESTANDAR)
                     master_energ = e_chunk if master_energ is None else pd.concat([master_energ, e_chunk], ignore_index=True).groupby(['ID_LINEA', 'LINEA_SILAS_DNGFF', 'PROVINCIA', 'AMBA', 'ENERGIA_DESC'], dropna=False).sum().reset_index()
 
-                    # 4. Contrato
                     ct_chunk = chunk_benef.groupby(['CONTRATO', 'AMBA'], dropna=False).agg(RECAUDACION=('RECAUDACION', 'sum'), USOS=(c_us_df, 'sum'), DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL s/IVA', 'sum'), COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), ATRIBUTO_EN_BASE=('DESCUENTO_ATRIBUTOS', 'sum')).reset_index()
                     master_contrato = ct_chunk if master_contrato is None else pd.concat([master_contrato, ct_chunk], ignore_index=True).groupby(['CONTRATO', 'AMBA'], dropna=False).sum().reset_index()
 
-                    # 5. Medio Pago
                     mp_col = buscar_col(chunk_benef, 'MEDIOS_DE_PAGO')
                     mp_chunk = resumir(chunk_benef, [mp_col, 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], AGG_ESTANDAR)
                     master_mp = mp_chunk if master_mp is None else pd.concat([master_mp, mp_chunk], ignore_index=True).groupby([mp_col, 'PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA'], dropna=False).sum().reset_index()
 
-                    # 6. Tarifario
                     CLAVES_TARIFARIO = ['PROVINCIA', 'MUNICIPIO', 'GRUPO_TARIFARIO', 'AMBA', 'LINEA_SILAS_DNGFF', 'ID_LINEA', 'RAMAL', 'CONTRATO', 'TARIFA', 'DEBITADO']
                     t_chunk = chunk_benef.groupby(CLAVES_TARIFARIO, dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=('DESCUENTO_ATRIBUTOS', 'sum'), DESCUENTO_TOTAL=('DESCUENTO_TOTAL', 'sum')).reset_index()
                     master_tarifario = t_chunk if master_tarifario is None else pd.concat([master_tarifario, t_chunk], ignore_index=True).groupby(CLAVES_TARIFARIO, dropna=False).sum().reset_index()
 
-                    # 7. Tarifario Dominio
                     chunk_td = chunk_benef.copy()
                     es_gasoil = (chunk_td['TIPO_ENERGIA'] == 3).fillna(False).to_numpy()
                     chunk_td['DOMINIO'] = np.where(es_gasoil, 'NO', chunk_td['DOMINIO'])
@@ -495,11 +492,9 @@ def modulo_dmk():
                     td_chunk = chunk_td.groupby(CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'], dropna=False).agg(USOS=(c_us_df, 'sum'), RECAUDACION=('RECAUDACION', 'sum'), **{'TOTAL DESC POR INTEGRACION': (c_di_df, 'sum')}, DESCUENTO_ATRIBUTOS=('DESCUENTO_ATRIBUTOS', 'sum'), DESCUENTO_TOTAL=('DESCUENTO_TOTAL', 'sum')).reset_index()
                     master_td = td_chunk if master_td is None else pd.concat([master_td, td_chunk], ignore_index=True).groupby(CLAVES_TARIFARIO + ['DOMINIO', 'ENERGIA'], dropna=False).sum().reset_index()
 
-                    # 8. ATS 621
                     b621_chunk = chunk_benef[chunk_benef['CONTRATO'].isin(CONTRATOS_ATS)].groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON_SOCIAL', 'ID_LINEA', 'RAMAL'], dropna=False).agg(**{'MONTO TOTAL COBRADO': ('RECAUDACION', 'sum')}, **{'CANTIDAD DE TRANSACCIONES': (c_us_df, 'sum')}, **{'DESCUENTO TOTAL ITG': ('COMP. ITG', 'sum')}, **{'DESCUENTO TOTAL ATS': ('COMP. ATS', 'sum')}, AMBA=('AMBA', 'first')).reset_index().rename(columns={'ID_LINEA': 'LINEA', 'RAZON_SOCIAL': 'RAZON SOCIAL'})
                     master_621 = b621_chunk if master_621 is None else pd.concat([master_621, b621_chunk], ignore_index=True).groupby(['JURISDICCION', 'PROVINCIA', 'MUNICIPIO', 'ID_EMPRESA', 'RAZON SOCIAL', 'LINEA', 'RAMAL', 'AMBA'], dropna=False).sum().reset_index()
 
-                    # 9. No Beneficiarias
                     if not chunk_no_benef.empty:
                         nb_chunk = chunk_no_benef.groupby(['ID_LINEA', 'ID_EMPRESA'], dropna=False).agg(
                             RAMALES=('RAMAL', lambda x: set(x.dropna())),
@@ -572,12 +567,13 @@ def modulo_dmk():
                     formatear_excel(writer.sheets['ATS_621'], resumen_621, COLS_MONEDA)
                 st.session_state.dmk_621 = buf_621.getvalue()
 
-                st.session_state.dmk_csv = buf_csv.getvalue().encode('utf-8-sig').replace(b'.', b',')
+                # Lectura limpia del archivo temporal del disco
+                with open(ruta_temp_csv, 'rb') as f:
+                    st.session_state.dmk_csv = f.read()
+                os.unlink(ruta_temp_csv)
 
                 del master_comp, master_energ, master_contrato, master_mp, master_tarifario, master_td, master_621, chunks_unicos, chunks_no_benef
                 gc.collect()
-
-                st.rerun()
 
                 st.rerun()
 
