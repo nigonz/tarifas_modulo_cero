@@ -1,1 +1,3 @@
-
+Ini, TOML
+[server]
+maxUploadSize = 1000
