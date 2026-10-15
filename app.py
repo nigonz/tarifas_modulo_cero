@@ -193,7 +193,7 @@ def modulo_tarifas():
 
                                     if es_seccionada:
                                         val_inf = valor_base_inf
-                                        val_sup = valor_base_sup + 0.05
+                                        val_sup = valor_base_sup + 0.005
                                     else:
                                         val_inf = valor_base_inf
                                         val_sup = valor_base_sup
