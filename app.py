@@ -827,7 +827,8 @@ def modulo_calculo_ttr():
                 del df_aria, _df2_
                 gc.collect()
                 st.rerun()
-                except Exception as e: st.error(f"Error procesando TTR: {e}")
+
+            except Exception as e: st.error(f"Error procesando TTR: {e}")
 
     if st.session_state.ttr_salida is not None:
         st.success("✅ ¡Valorización TTR calculada!")
