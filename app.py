@@ -19,17 +19,20 @@ st.set_page_config(page_title="TTR_ARIA - Sistema Integral", layout="wide")
 # ==============================================================================
 def parse_argentinian_float(val):
     if pd.isna(val) or str(val).strip() == "": return 0.0
-    s = str(val).replace(',', '.')
-    try: return float(s)
-    except: return 0.0
-
-def truncar_a_2(valor):
-    try:
-        if pd.isna(valor): return valor
-        return math.trunc(float(valor) * 100) / 100.0
-    except:
+    
+    # 1. Primero limpiamos los espacios en blanco por las dudas
+    s = str(val).strip()
+    
+    # 2. Eliminamos los puntos de los miles
+    s = s.replace('.', '')
+    
+    # 3. Cambiamos la coma decimal por el punto que entiende Python
+    s = s.replace(',', '.')
+    
+    try: 
+        return float(s)
+    except: 
         return 0.0
-
 def truncar_serie(serie):
     return np.trunc(pd.to_numeric(serie, errors='coerce').fillna(0).astype(float) * 100) / 100.0
 
