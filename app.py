@@ -827,3 +827,21 @@ def modulo_calculo_ttr():
                 del df_aria, _df2_
                 gc.collect()
                 st.rerun()
+                except Exception as e: st.error(f"Error procesando TTR: {e}")
+
+    if st.session_state.ttr_salida is not None:
+        st.success("✅ ¡Valorización TTR calculada!")
+        st.download_button(label="📥 Descargar Base Macheo TTR (.xlsx)", data=st.session_state.ttr_salida, file_name="macheo_ttr_ARIA.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+# ==============================================================================
+# CONTROLADOR LATERAL
+# ==============================================================================
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", width=60)
+st.sidebar.title("Menú TTR_ARIA")
+modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
+st.sidebar.markdown("---")
+st.sidebar.info("Proyecto ARIA v3.6\n\nMotor unificado TTR.")
+
+if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
+elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
+else: modulo_calculo_ttr()
