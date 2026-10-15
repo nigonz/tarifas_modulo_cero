@@ -197,9 +197,7 @@ def modulo_tarifas():
                                     mult_ts = 1.75 if ts == "EA" else (1.25 if ts == "E" else 1.0)
                                     mult_nom = 2.0 if "SN" in nom else 1.0
 
-                                   valor_base_inf = round((base_inf * mult_ts * mult_nom) + 0.0001, 2)
-                                   valor_base_sup = round((base_sup * mult_ts * mult_nom) + 0.0001, 2)
-                                
+                                    
                                     # 2. Asignación de la tolerancia: Mínimo exacto, Máximo + 0.50 para seccionadas
                                     es_seccionada = ("KM" not in concat) and ("KP" not in concat)
                                 
