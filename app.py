@@ -198,28 +198,24 @@ def modulo_tarifas():
                                     mult_nom = 2.0 if "SN" in nom else 1.0
 
                                    valor_base_inf = round((base_inf * mult_ts * mult_nom) + 0.0001, 2)
-                                    valor_base_sup = round((base_sup * mult_ts * mult_nom) + 0.0001, 2)
+                                   valor_base_sup = round((base_sup * mult_ts * mult_nom) + 0.0001, 2)
                                 
                                     # 2. Asignación de la tolerancia: Mínimo exacto, Máximo + 0.50 para seccionadas
                                     es_seccionada = ("KM" not in concat) and ("KP" not in concat)
                                 
-                                    if es_seccionada:
-                                        val_inf = valor_base_inf
-                                        val_sup = valor_base_sup + 0.50
-                                    else:
-                                        val_inf = valor_base_inf
-                                        val_sup = valor_base_sup
+                            if es_seccionada:
+                                val_inf = valor_base_inf
+                                val_sup = valor_base_sup + 0.50
+                            else:
+                                val_inf = valor_base_inf
+                                val_sup = valor_base_sup
+                        
+                            if concat not in mapa_resultados: 
+                                mapa_resultados[concat] = (val_inf, val_sup)
+                        
+                            nuevos_limites_inf.append(val_inf)
+                            nuevos_limites_sup.append(val_sup)
                                 
-                                    if concat not in mapa_resultados: 
-                                        mapa_resultados[concat] = (val_inf, val_sup)
-                                # --- FIN DEL NUEVO BLOQUE ---
-                            
-                                nuevos_limites_inf.append(val_inf); nuevos_limites_sup.append(val_sup))
-                                    
-                                    if concat not in mapa_resultados: mapa_resultados[concat] = (val_inf, val_sup)
-
-                                nuevos_limites_inf.append(val_inf); nuevos_limites_sup.append(val_sup)
-
                             df_hist[f'{mes_act}'] = nuevos_limites_inf
                             col_sup_name = f'{mes_act}_Sup'
                             df_hist[col_sup_name] = nuevos_limites_sup
