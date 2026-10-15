@@ -17,22 +17,33 @@ st.set_page_config(page_title="TTR_ARIA - Sistema Integral", layout="wide")
 # ==============================================================================
 # FUNCIONES COMPARTIDAS
 # ==============================================================================
+# ==============================================================================
+# FUNCIONES COMPARTIDAS
+# ==============================================================================
 def parse_argentinian_float(val):
     if pd.isna(val) or str(val).strip() == "": return 0.0
     
-    # 1. Primero limpiamos los espacios en blanco por las dudas
+    # 1. Primero limpiamos los espacios en blanco
     s = str(val).strip()
     
     # 2. Eliminamos los puntos de los miles
     s = s.replace('.', '')
     
-    # 3. Cambiamos la coma decimal por el punto que entiende Python
+    # 3. Cambiamos la coma decimal por el punto
     s = s.replace(',', '.')
     
     try: 
         return float(s)
     except: 
         return 0.0
+
+def truncar_a_2(valor):
+    try:
+        if pd.isna(valor): return valor
+        return math.trunc(float(valor) * 100) / 100.0
+    except:
+        return 0.0
+
 def truncar_serie(serie):
     return np.trunc(pd.to_numeric(serie, errors='coerce').fillna(0).astype(float) * 100) / 100.0
 
@@ -78,7 +89,6 @@ def buscar_col(df, *palabras_clave):
         for col in df.columns:
             if kw.upper() in str(col).upper(): return col
     return None
-
 # ==============================================================================
 # MÓDULO 0: TARIFARIO JN
 # ==============================================================================
