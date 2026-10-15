@@ -10,28 +10,16 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 import tempfile
 
-
-
 st.set_page_config(page_title="TTR_ARIA - Sistema Integral", layout="wide")
 
 # ==============================================================================
 # FUNCIONES COMPARTIDAS
 # ==============================================================================
-# ==============================================================================
-# FUNCIONES COMPARTIDAS
-# ==============================================================================
 def parse_argentinian_float(val):
     if pd.isna(val) or str(val).strip() == "": return 0.0
-    
-    # 1. Primero limpiamos los espacios en blanco
     s = str(val).strip()
-    
-    # 2. Eliminamos los puntos de los miles
     s = s.replace('.', '')
-    
-    # 3. Cambiamos la coma decimal por el punto
     s = s.replace(',', '.')
-    
     try: 
         return float(s)
     except: 
@@ -89,6 +77,7 @@ def buscar_col(df, *palabras_clave):
         for col in df.columns:
             if kw.upper() in str(col).upper(): return col
     return None
+
 # ==============================================================================
 # MÓDULO 0: TARIFARIO JN
 # ==============================================================================
@@ -197,22 +186,23 @@ def modulo_tarifas():
                                     mult_ts = 1.75 if ts == "EA" else (1.25 if ts == "E" else 1.0)
                                     mult_nom = 2.0 if "SN" in nom else 1.0
 
-                                    
-                                    # 2. Asignación de la tolerancia: Mínimo exacto, Máximo + 0.50 para seccionadas
+                                    valor_base_inf = round((base_inf * mult_ts * mult_nom) + 0.0001, 2)
+                                    valor_base_sup = round((base_sup * mult_ts * mult_nom) + 0.0001, 2)
+
                                     es_seccionada = ("KM" not in concat) and ("KP" not in concat)
-                                
-                            if es_seccionada:
-                                val_inf = valor_base_inf
-                                val_sup = valor_base_sup + 0.50
-                            else:
-                                val_inf = valor_base_inf
-                                val_sup = valor_base_sup
-                        
-                            if concat not in mapa_resultados: 
-                                mapa_resultados[concat] = (val_inf, val_sup)
-                        
-                            nuevos_limites_inf.append(val_inf)
-                            nuevos_limites_sup.append(val_sup)
+
+                                    if es_seccionada:
+                                        val_inf = valor_base_inf
+                                        val_sup = valor_base_sup + 0.50
+                                    else:
+                                        val_inf = valor_base_inf
+                                        val_sup = valor_base_sup
+
+                                    if concat not in mapa_resultados: 
+                                        mapa_resultados[concat] = (val_inf, val_sup)
+
+                                nuevos_limites_inf.append(val_inf)
+                                nuevos_limites_sup.append(val_sup)
                                 
                             df_hist[f'{mes_act}'] = nuevos_limites_inf
                             col_sup_name = f'{mes_act}_Sup'
@@ -245,14 +235,14 @@ def modulo_tarifas():
                         except Exception as e: st.error(f"Error procesando la matriz: {e}")
 
         if st.session_state.matriz_procesada is not None:
-            st.success(f"✅ ¡Matriz de {st.session_state.matriz_nombre} generada con éxito (Truncada a 2 decimales exactos)!")
+            st.success(f"✅ ¡Matriz de {st.session_state.matriz_nombre} generada con éxito!")
             st.download_button(label=f"📥 Descargar Matriz Definitiva {mes_act} (.xlsx)", 
-                               data=st.session_state.matriz_procesada, 
-                               file_name=f"Matriz_TTR_ARIA_{st.session_state.matriz_nombre}.xlsx", 
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                             data=st.session_state.matriz_procesada, 
+                             file_name=f"Matriz_TTR_ARIA_{st.session_state.matriz_nombre}.xlsx", 
+                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ==============================================================================
-# MÓDULO 1: DMK (ITG y ATS) - ACUMULADOR MAESTRO Y STREAMING EN DISCO
+# MÓDULO 1: DMK (ITG y ATS)
 # ==============================================================================
 def modulo_dmk():
     st.title("🧮 TTR_ARIA - Módulo 1: Liquidación DMK (ITG/ATS)")
@@ -288,11 +278,8 @@ def modulo_dmk():
             st.error("⚠️ Faltan cargar archivos. Asegurate de subir los 4 requeridos.")
             return
             
-        with st.spinner("Procesando pipeline de datos DMK con Acumulador Maestro (Cero RAM Bloat)..."):
+        with st.spinner("Procesando pipeline de datos DMK..."):
             try:
-                import tempfile
-                import os
-
                 xl_nomenclador = pd.ExcelFile(file_nom_univ)
                 hoja_lineas = 'Nomenclador_Interior' if 'Nomenclador_Interior' in xl_nomenclador.sheet_names else 0
                 nom_lineas_raw = pd.read_excel(file_nom_univ, sheet_name=hoja_lineas)
@@ -381,21 +368,12 @@ def modulo_dmk():
                     'RECAUDACION_CALC', 'DESC_TOTAL_CALC', 'COMP_ITG_CALC', 'COMP_ATS_CALC', 'DIF_RECAUDACION', 'DIF_DESC_TOTAL', 'DIF_ITG', 'DIF_ATS',
                 ]
 
-                # Archivo temporal en disco para el CSV
                 temp_csv = tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8-sig', newline='')
                 ruta_temp_csv = temp_csv.name
                 temp_csv.close()
                 
-                master_comp = None
-                master_energ = None
-                master_contrato = None
-                master_mp = None
-                master_tarifario = None
-                master_td = None
-                master_621 = None
-                
-                chunks_unicos = []
-                chunks_no_benef = []
+                master_comp, master_energ, master_contrato, master_mp, master_tarifario, master_td, master_621 = None, None, None, None, None, None, None
+                chunks_unicos, chunks_no_benef = [], []
 
                 if file_dggi.name.endswith('.csv'):
                     lector = pd.read_csv(file_dggi, encoding='ISO-8859-1', delimiter=';', usecols=columnas_existentes, chunksize=50000, low_memory=True)
@@ -407,7 +385,7 @@ def modulo_dmk():
                 es_primer_chunk = True
 
                 for i, chunk in enumerate(lector):
-                    texto_estado.text(f"Procesando bloque {i+1} en streaming y acumulando totales...")
+                    texto_estado.text(f"Procesando bloque {i+1}...")
                     chunk = chunk.rename(columns=rename_dict)
                     if 'DESCUENTO_ATRIBUTOS' not in chunk.columns: chunk['DESCUENTO_ATRIBUTOS'] = 0.0
 
@@ -474,7 +452,6 @@ def modulo_dmk():
                     chunk_benef = chunk[chunk['ES_BENEFICIARIA'] == 'SI'].copy()
                     chunk_no_benef = chunk[chunk['ES_BENEFICIARIA'] == 'NO'].copy()
                     
-                    # Escribir CSV al archivo temporal en disco
                     mode = 'w' if es_primer_chunk else 'a'
                     chunk_benef.to_csv(ruta_temp_csv, index=False, sep=';', header=es_primer_chunk, mode=mode, decimal=',')
                     
@@ -535,7 +512,7 @@ def modulo_dmk():
                     es_primer_chunk = False
 
                 progreso.progress(100)
-                texto_estado.text("Generando archivos Excel y CSV finales...")
+                texto_estado.text("Generando archivos finales...")
 
                 resumen_compensacion = master_comp if master_comp is not None else pd.DataFrame()
                 resumen_energia = master_energ if master_energ is not None else pd.DataFrame()
@@ -564,8 +541,8 @@ def modulo_dmk():
                         CONTRATOS=('CONTRATOS', lambda x: ', '.join(map(str, sorted(set().union(*[set(s) for s in x if isinstance(s, (set, list, tuple))]))))),
                         RECAUDACION=('RECAUDACION', 'sum'), USOS=('USOS', 'sum'), 
                         DESCUENTO_TOTAL_sIVA=('DESCUENTO_TOTAL_sIVA', 'sum'), 
-                        COMP_ITG_sIVA=('COMP_ITG_sIVA', 'sum'), 
-                        COMP_ATS_sIVA=('COMP_ATS_sIVA', 'sum'), 
+                        COMP_ITG_sIVA=('COMP. ITG s/IVA', 'sum'), 
+                        COMP_ATS_sIVA=('COMP. ATS s/IVA', 'sum'), 
                         ATRIBUTO_EN_BASE=('ATRIBUTO_EN_BASE', 'sum')
                     ).reset_index().sort_values('USOS', ascending=False)
                 else: no_benef_detalle = pd.DataFrame()
@@ -575,7 +552,7 @@ def modulo_dmk():
                     'Resumen_Contrato': resumen_contrato, 'Resumen_MedioPago': resumen_medio_pago,
                     'Resumen_Tarifario': resumen_tarifario, 'Resumen_Tarifario_Dominio': resumen_tarifario_dominio, 'NoBenef_Detalle': no_benef_detalle,
                 }
-                COLS_MONEDA = ['TARIFA', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'RECAUDACION', 'RECAUDACION_CALC', 'DESCUENTO_TOTAL', 'DESCUENTO_TOTAL s/IVA', 'DESCUENTO_TOTAL_sIVA', 'DESC_TOTAL_CALC', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_ATRIBUTOS', 'ATRIBUTO_EN_BASE', 'COMP. ITG', 'COMP. ITG s/IVA', 'COMP. ATS', 'COMP. ATS s/IVA', 'COMP. TOTAL s/IVA', 'COMP_ITG', 'COMP_ITG_sIVA', 'COMP_ATS', 'COMP_ATS_sIVA', 'COMP_ITG_CALC', 'COMP_ATS_CALC', 'DIF_RECAUDACION', 'DIF_DESC_TOTAL', 'DIF_ITG', 'DIF_ATS', 'MONTO TOTAL COBRADO', 'DESCUENTO TOTAL ITG', 'DESCUENTO TOTAL ATS']
+                COLS_MONEDA = ['TARIFA', 'DEBITADO', 'DESCUENTO X INTEGRACION', 'RECAUDACION', 'RECAUDACION_CALC', 'DESCUENTO_TOTAL', 'DESCUENTO_TOTAL s/IVA', 'DESC_TOTAL_CALC', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_ATRIBUTOS', 'ATRIBUTO_EN_BASE', 'COMP. ITG', 'COMP. ITG s/IVA', 'COMP. ATS', 'COMP. ATS s/IVA', 'COMP. TOTAL s/IVA', 'COMP_ITG', 'COMP_ITG_sIVA', 'COMP_ATS', 'COMP_ATS_sIVA', 'COMP_ITG_CALC', 'COMP_ATS_CALC', 'DIF_RECAUDACION', 'DIF_DESC_TOTAL', 'DIF_ITG', 'DIF_ATS', 'MONTO TOTAL COBRADO', 'DESCUENTO TOTAL ITG', 'DESCUENTO TOTAL ATS']
 
                 buf_resumenes = io.BytesIO()
                 with pd.ExcelWriter(buf_resumenes, engine='openpyxl') as writer:
@@ -590,7 +567,6 @@ def modulo_dmk():
                     formatear_excel(writer.sheets['ATS_621'], resumen_621, COLS_MONEDA)
                 st.session_state.dmk_621 = buf_621.getvalue()
 
-                # Lectura limpia del archivo temporal del disco
                 with open(ruta_temp_csv, 'rb') as f:
                     st.session_state.dmk_csv = f.read()
                 os.unlink(ruta_temp_csv)
@@ -603,8 +579,7 @@ def modulo_dmk():
             except Exception as e: st.error(f"Error procesando DMK: {e}")
 
     if st.session_state.dmk_resumenes is not None:
-        st.success("✅ ¡Liquidación procesada con éxito absoluto! Memoria plana y resúmenes completos.")
-        st.markdown("### Descargas Disponibles")
+        st.success("✅ ¡Liquidación procesada con éxito!")
         d1, d2, d3 = st.columns(3)
         d1.download_button("📥 Descargar Resúmenes (.xlsx)", data=st.session_state.dmk_resumenes, file_name="DGGI_ITG_ATS_Resumenes.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         d2.download_button("📥 Descargar Reporte ATS 621 (.xlsx)", data=st.session_state.dmk_621, file_name="DGGI_ATS_621.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
@@ -615,7 +590,7 @@ def modulo_dmk():
 # ==============================================================================
 def modulo_calculo_ttr():
     st.title("🧮 TTR_ARIA - Módulo 3: Cálculo y Valorización TTR")
-    st.markdown("Clasificación tarifaria y cálculo de recaudación teórica (TRSUBE) conectada a la Matriz ARIA.")
+    st.markdown("Clasificación tarifaria y cálculo de recaudación teórica (TRSUBE).")
 
     if "ttr_salida" not in st.session_state:
         st.session_state.ttr_salida = None
@@ -631,7 +606,7 @@ def modulo_calculo_ttr():
         c1, c2, c3 = st.columns(3)
         anio = c1.number_input("Año de Liquidación", value=2026)
         resolucion = c2.text_input("Número de Resolución", "48")
-        filtro_tarifa_vieja = c3.number_input("Corte Tarifa Vieja (Ej: 728.23)", value=728.23)
+        filtro_tarifa_vieja = c3.number_input("Corte Tarifa Vieja", value=728.23)
 
     if st.button("🚀 Ejecutar Valorización TTR", type="primary", use_container_width=True):
         if not all([file_tarifario_dmk, file_matriz_aria, file_nom_ramal, file_ttr_reso]):
@@ -702,7 +677,6 @@ def modulo_calculo_ttr():
                 c_usos = buscar_col(_df2_, 'USOS')
                 c_tar = buscar_col(_df2_, 'TARIFA')
                 _df2_[c_usos] = pd.to_numeric(_df2_[c_usos].astype(str).replace({',': ''}, regex=True), errors='coerce').fillna(0) if c_usos else 0
-                
                 _df2_[c_tar] = pd.to_numeric(_df2_[c_tar].astype(str).replace({',': ''}, regex=True), errors='coerce').apply(truncar_a_2)
                 
                 c_ramal_nom = buscar_col(nom_ts, 'IdRamalNS', 'RAMAL')
@@ -725,12 +699,12 @@ def modulo_calculo_ttr():
                 _df2_['PASES'] = np.where((_df2_[c_tar] >= 0) & (_df2_[c_tar] <= 0.5), 1, 0)
                 _df2_['FILTRO_1'] = np.where((_df2_[c_tar] < filtro_tarifa_vieja) & (_df2_[c_tar] > 0.5), 1, 0)
 
-                for col, (lim_inf, lim_sup) in tarifas_1.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio'] != "SR"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_2.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio'] != "SR"), 1, 0)
-                for col, (lim_inf, lim_sup, ts_val) in tarifas_3.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
-                for col, (lim_inf, lim_sup, ts_val) in tarifas_4.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
-                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_7.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] < lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
-                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_8.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] < lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
+                for col, (lim_inf, lim_sup) in tarifas_1.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio'] != "SR"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_2.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio'] != "SR"), 1, 0)
+                for col, (lim_inf, lim_sup, ts_val) in tarifas_3.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
+                for col, (lim_inf, lim_sup, ts_val) in tarifas_4.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), 1, 0)
+                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_7.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] < lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
+                for col, (lim_inf, lim_sup, ts_val, val_asig) in tarifas_8.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] < lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_['TipoServicio2'] == ts_val), val_asig, 0)
 
                 c_sn_cn = ['1SCN', '2SCN', '3SCN', '4SCN', '5SCN']
                 c_kmn_cn = ['1-4KMCN']
@@ -741,9 +715,9 @@ def modulo_calculo_ttr():
                 c_kmn_ean = ['1-4KMEAN']
                 c_kpn_ean = c_kpn_en + ['5KPEN', '6KPEN', '7KPEN', '8KPEN', '9KPEN']
                 
-                for col, (lim_inf, lim_sup) in tarifas_cn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_cn].sum(axis=1) == 0) & (_df2_[c_kmn_cn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_en.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_en].sum(axis=1) == 0) & (_df2_[c_kmn_en].sum(axis=1) == 0) & (_df2_[c_kpn_en].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_ean.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_ean].sum(axis=1) == 0) & (_df2_[c_kmn_ean].sum(axis=1) == 0) & (_df2_[c_kpn_ean].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_cn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_cn].sum(axis=1) == 0) & (_df2_[c_kmn_cn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_en.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_en].sum(axis=1) == 0) & (_df2_[c_kmn_en].sum(axis=1) == 0) & (_df2_[c_kpn_en].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_ean.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 0) & (_df2_[c_sn_ean].sum(axis=1) == 0) & (_df2_[c_kmn_ean].sum(axis=1) == 0) & (_df2_[c_kpn_ean].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
                 
                 c_sn_cSn = ['1SCSN', '2SCSN', '3SCSN', '4SCSN', '5SCSN']
                 c_kmn_cSn = ['1-4KMCSN']
@@ -754,9 +728,9 @@ def modulo_calculo_ttr():
                 c_kmn_eaSn = ['1-4KMEASN']
                 c_kpn_eaSn = c_kpn_eSn + ['5KPESN', '6KPESN', '7KPESN', '8KPESN', '9KPESN']
 
-                for col, (lim_inf, lim_sup) in tarifas_cn_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_cSn].sum(axis=1) == 0) & (_df2_[c_kmn_cSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_en_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eSn].sum(axis=1) == 0) & (_df2_[c_kmn_eSn].sum(axis=1) == 0) & (_df2_[c_kpn_eSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
-                for col, (lim_inf, lim_sup) in tarifas_ean_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf - 0.5) & (_df2_[c_tar] <= lim_sup - 0.5) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eaSn].sum(axis=1) == 0) & (_df2_[c_kmn_eaSn].sum(axis=1) == 0) & (_df2_[c_kpn_eaSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_cn_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_cSn].sum(axis=1) == 0) & (_df2_[c_kmn_cSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_en_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eSn].sum(axis=1) == 0) & (_df2_[c_kmn_eSn].sum(axis=1) == 0) & (_df2_[c_kpn_eSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
+                for col, (lim_inf, lim_sup) in tarifas_ean_sn.items(): _df2_[col] = np.where((_df2_[c_tar] >= lim_inf) & (_df2_[c_tar] <= lim_sup) & (_df2_['PASES'] == 0) & (_df2_['sin_nominalizar'] == 1) & (_df2_[c_sn_eaSn].sum(axis=1) == 0) & (_df2_[c_kmn_eaSn].sum(axis=1) == 0) & (_df2_[c_kpn_eaSn].sum(axis=1) == 0) & (_df2_[c_gt] != "DF"), 1, 0)
 
                 _df2_['Filtro1-4KMCN'] = np.where((_df2_['TipoServicio2'] == 'C') & (_df2_[c_sn_en + c_sn_ean].sum(axis=1) != 0) & (_df2_['1-4KMCN2'] == 1), 4, 0)
                 _df2_['Filtro1-4KMEN'] = np.where((_df2_['TipoServicio2'] == 'E') & (_df2_[c_sn_ean].sum(axis=1) != 0) & (_df2_['1-4KMEN2'] == 1), 4, 0)
@@ -836,7 +810,7 @@ def modulo_calculo_ttr():
                     for _, (l_inf, l_sup, t_srv, sec) in dict_t.items():
                         s_rng = np.linspace(l_inf, l_sup, 4)
                         for i in range(3):
-                            msk = ((df[c_tar] >= s_rng[i] - 0.5) & (df[c_tar] < s_rng[i+1] - 0.5) & (df['PASES'] == 0) & (df['sin_nominalizar'] == flt_sn) & (df['TipoServicio2'] == t_srv))
+                            msk = ((df[c_tar] >= s_rng[i]) & (df[c_tar] < s_rng[i+1]) & (df['PASES'] == 0) & (df['sin_nominalizar'] == flt_sn) & (df['TipoServicio2'] == t_srv))
                             df.loc[msk, 'SubSeccion'] = f"{sec}-{i+1}"
 
                 asignar_subsecciones(_df2_, tarifas_7, 0)
@@ -849,27 +823,7 @@ def modulo_calculo_ttr():
                     formatear_excel(writer.sheets['Valorizacion_TTR'], _df2_, ['TARIFA', 'DEBITADO', 'USOS', 'RECAUDACION', 'TOTAL DESC POR INTEGRACION', 'DESCUENTO_ATRIBUTOS', 'DESCUENTO_TOTAL', 'Tarifa TRSUBE', 'Tarifa TRSUBE2', 'Tarifa TRSUBE_FINAL', 'Recaudacion_TRSUBE'])
                 buf_salida.seek(0)
                 
+                st.session_state.ttr_salida = buf_salida.getvalue()
                 del df_aria, _df2_
                 gc.collect()
-                with open(ruta_temp_csv, 'rb') as f:
-                    st.session_state.dmk_csv = f.read()
                 st.rerun()
-
-            except Exception as e: st.error(f"Error procesando TTR: {e}")
-
-    if st.session_state.ttr_salida is not None:
-        st.success("✅ ¡Valorización TTR calculada y guardada en memoria! (Truncado a 2 decimales y formato Excel solucionado)")
-        st.download_button(label="📥 Descargar Base Macheo TTR (.xlsx)", data=st.session_state.ttr_salida, file_name="macheo_ttr_ARIA.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-
-# ==============================================================================
-# CONTROLADOR LATERAL
-# ==============================================================================
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/1792/1792404.png", width=60)
-st.sidebar.title("Menú TTR_ARIA")
-modulo_seleccionado = st.sidebar.radio("Navegación", ["Módulo 0: Tarifas JN", "Módulo 1: Liquidación DMK", "Módulo 3: Cálculo TTR"])
-st.sidebar.markdown("---")
-st.sidebar.info("Proyecto ARIA v3.6 (Acumulador Maestro Streaming)\n\nMotor unificado de cálculos TTR.")
-
-if modulo_seleccionado == "Módulo 0: Tarifas JN": modulo_tarifas()
-elif modulo_seleccionado == "Módulo 1: Liquidación DMK": modulo_dmk()
-else: modulo_calculo_ttr()
